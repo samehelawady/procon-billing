@@ -1,0 +1,72 @@
+{% load humanize %}
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: sans-serif; font-size: 10px; color: #333; }
+        .header-table, .data-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        .data-table th, .data-table td { border: 1px solid #ccc; padding: 5px; text-align: left; }
+        .data-table th { background: #f4f4f4; font-size: 9px; }
+        .text-right { text-align: right; }
+        .footer-box { width: 250px; margin-left: auto; }
+        .total-row { font-weight: bold; background: #eee; }
+    </style>
+</head>
+<body>
+    <h2>{{ invoice.get_inv_type_display|upper }} INVOICE {% if invoice.is_advance_invoice %}(ADVANCE){% endif %}</h2>
+    <table class="header-table">
+        <tr>
+            <td><strong>Client:</strong> {{ invoice.project.client.name }}</td>
+            <td class="text-right"><strong>Invoice No:</strong> {{ invoice }}</td>
+        </tr>
+    </table>
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Ref</th>
+                <th>Description</th>
+                <th>Rate</th>
+                <th>Prev Qty</th>
+                <th>Curr Qty</th>
+                <th>Cum Qty</th>
+                <th>Prev Amt</th>
+                <th>Curr Amt</th>
+                <th>Cum Amt</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td>{{ item.boq_item.item_number }}</td>
+                <td>{{ item.boq_item.description }}</td>
+                <td class="text-right">{{ item.rate|floatformat:2|intcomma }}</td>
+                <td class="text-right">{{ item.prev_qty|floatformat:2|intcomma }}</td>
+                <td class="text-right">{{ item.current_qty|floatformat:2|intcomma }}</td>
+                <td class="text-right">{{ item.prev_qty|add:item.current_qty|floatformat:2|intcomma }}</td>
+                <td class="text-right">{{ item.prev_amount|floatformat:2|intcomma }}</td>
+                <td class="text-right">{{ item.gross_amount|floatformat:2|intcomma }}</td>
+                <td class="text-right">{{ item.prev_amount|add:item.gross_amount|floatformat:2|intcomma }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="footer-box">
+        <table class="data-table">
+            <tr class="total-row">
+                <td>Current Amount</td>
+                <td class="text-right">{{ invoice.total_current_amount|floatformat:2|intcomma }}</td>
+            </tr>
+            <tr>
+                <td>VAT ({{ invoice.vat_percent }}%)</td>
+                <td class="text-right">{{ invoice.vat_amount|floatformat:2|intcomma }}</td>
+            </tr>
+            <tr class="total-row" style="background:#333; color:#fff;">
+                <td>TOTAL DUE</td>
+                <td class="text-right">{{ invoice.total_after_vat|floatformat:2|intcomma }}</td>
+            </tr>
+        </table>
+    </div>
+</body>
+</html>
