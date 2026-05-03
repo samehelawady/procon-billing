@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import os
+from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
@@ -26,9 +28,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
-SECRET_KEY = os.environ.get('Snsk_eaqqmVc0F7wfH26nImir6UOApwIKFkAoeDBSLXBbZ2Qv7YtkolWNQZmWwukS94')
-DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+# At the TOP of settings.py, before anything else
+SECRET_KEY = '4MKODbrZWq5ZCSAvrh3IGmI2BlaAe4ZYQkVGfxdv2pnU4zdlcmRK7aYXr6rMefj4hJ0'
+DEBUG = True
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')
+
+# Build paths inside the project
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # Application definition
