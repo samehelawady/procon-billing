@@ -31,8 +31,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # At the TOP of settings.py, before anything else
 SECRET_KEY = '4MKODbrZWq5ZCSAvrh3IGmI2BlaAe4ZYQkVGfxdv2pnU4zdlcmRK7aYXr6rMefj4hJ0'
 DEBUG = True
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')
-
+ALLOWED_HOSTS = ['*']
+# ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')
 # Build paths inside the project
 BASE_DIR = Path(__file__).resolve().parent.parent
 
