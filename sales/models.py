@@ -1,5 +1,5 @@
 import decimal
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_UP
 from django.db import models
 from django.db.models import Sum, Max, Q
 from django.core.exceptions import ValidationError
@@ -9,6 +9,10 @@ from django.utils.html import format_html
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.urls import path, reverse
+from datetime import date
+import calendar
+from django.utils import timezone
+
 
 # =============================================================================
 # UTILITIES
@@ -34,6 +38,7 @@ class Client(models.Model):
     def __str__(self):
         return self.name
 
+
 # =============================================================================
 # Company Profile
 # =============================================================================
@@ -43,43 +48,29 @@ class CompanyProfile(models.Model):
         verbose_name_plural = "Company Profile"
 
     company_name = models.CharField(max_length=255)
-
     logo = models.ImageField(upload_to="company_logos/", blank=True, null=True)
-
     letter_header = models.ImageField(
         upload_to="company_headers/",
         blank=True,
         null=True,
         help_text="Invoice header image"
     )
-
     letter_footer = models.ImageField(
         upload_to="company_footers/",
         blank=True,
         null=True,
         help_text="Invoice footer image"
     )
-
-    trn_number = models.CharField(
-        max_length=100,
-        blank=True,
-        null=True
-    )
-
+    trn_number = models.CharField(max_length=100, blank=True, null=True)
     address = models.TextField(blank=True, null=True)
-
     bank = models.TextField(blank=True, null=True)
-
     phone = models.CharField(max_length=100, blank=True, null=True)
-
     email = models.EmailField(blank=True, null=True)
-
     website = models.CharField(max_length=255, blank=True, null=True)
 
     def __str__(self):
         return self.company_name
 
-    # =============================================================================
 
 class Project(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="projects")
@@ -123,7 +114,7 @@ class BOQItem(models.Model):
     UNIT_CHOICES = [
         ("M", "M"), ("M2", "M2"), ("M3", "M3"), ("LS", "LS"),
         ("Nos", "Nos"), ("EA", "EA"), ("LM", "LM"),
-        ("P.Sum", "P.Sum"), ("Item", "Item"), ("Unit", "Unit"),('Pcs', 'Pcs')
+        ("P.Sum", "P.Sum"), ("Item", "Item"), ("Unit", "Unit"), ('Pcs', 'Pcs')
     ]
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="boq_items")
     item_number = models.CharField(max_length=10)
@@ -157,9 +148,6 @@ class Invoice(models.Model):
     date = models.DateField()
     is_advance_invoice = models.BooleanField(default=False)
 
-    # ═══════════════════════════════════════════════════════════════
-    # NEW: Retention Recovery
-    # ═══════════════════════════════════════════════════════════════
     RETENTION_RECOVERY_CHOICES = [
         ('', 'None'),
         ('A', 'Retention A'),
@@ -189,8 +177,6 @@ class Invoice(models.Model):
             raise ValidationError(
                 f"Invoicing disabled. BOQ ({self.project.boq_total_value:,.2f}) != PO ({self.project.po_amount:,.2f})")
 
-    # --- Calculation Helpers ---
-
     @property
     def was_advance_taken(self):
         return Invoice.objects.filter(project=self.project, is_advance_invoice=True,
@@ -198,7 +184,8 @@ class Invoice(models.Model):
 
     @property
     def cumulative_work_done(self):
-        if self.is_advance_invoice: return Decimal("0.00")
+        if self.is_advance_invoice:
+            return Decimal("0.00")
         total = InvoiceItem.objects.filter(
             invoice__project=self.project,
             invoice__inv_number__lte=self.inv_number,
@@ -214,13 +201,14 @@ class Invoice(models.Model):
 
     @property
     def current_gross_total(self):
-        if self.is_advance_invoice: return Decimal("0.00")
+        if self.is_advance_invoice:
+            return Decimal("0.00")
         return self.items.aggregate(total=Sum('gross_amount'))['total'] or Decimal("0.00")
 
-    # Recovery A / Advance
     @property
     def cumulative_advance_recovered(self):
-        if self.is_advance_invoice or not self.was_advance_taken: return Decimal("0.00")
+        if self.is_advance_invoice or not self.was_advance_taken:
+            return Decimal("0.00")
         recovery = money(self.cumulative_work_done * (self.project.advance_percent / 100))
         return min(recovery, self.project.total_advance_value)
 
@@ -234,10 +222,10 @@ class Invoice(models.Model):
     def current_advance_recovery(self):
         return money(self.cumulative_advance_recovered - self.previous_advance_recovered)
 
-    # Retention A
     @property
     def cumulative_retention_a(self):
-        if self.is_advance_invoice: return Decimal("0.00")
+        if self.is_advance_invoice:
+            return Decimal("0.00")
         return money(self.cumulative_work_done * (self.project.retention_a_percent / 100))
 
     @property
@@ -250,10 +238,10 @@ class Invoice(models.Model):
     def current_retention_a(self):
         return money(self.cumulative_retention_a - self.previous_retention_a)
 
-    # Retention B
     @property
     def cumulative_retention_b(self):
-        if self.is_advance_invoice: return Decimal("0.00")
+        if self.is_advance_invoice:
+            return Decimal("0.00")
         return money(self.cumulative_work_done * (self.project.retention_b_percent / 100))
 
     @property
@@ -269,10 +257,6 @@ class Invoice(models.Model):
     @property
     def cumulative_retention_total(self):
         return money(self.cumulative_retention_a + self.cumulative_retention_b)
-
-    # -----------------------------------------------------------------
-    # NEW: Retention Recovery Properties
-    # -----------------------------------------------------------------
 
     @property
     def was_retention_a_recovered(self):
@@ -342,10 +326,10 @@ class Invoice(models.Model):
             total += prev.previous_retention_b
         return money(total)
 
-    # Totals
     @property
     def net_total_invoiced_cumulative(self):
-        if self.is_advance_invoice: return Decimal("0.00")
+        if self.is_advance_invoice:
+            return Decimal("0.00")
         base = money(
             self.cumulative_work_done
             - self.cumulative_advance_recovered
@@ -403,13 +387,11 @@ class InvoiceItem(models.Model):
     current_percentage = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     rate = models.DecimalField(max_digits=15, decimal_places=2, default=0)
 
-    # Historical Snapshots
     prev_qty = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
     prev_percentage = models.DecimalField(max_digits=8, decimal_places=2, default=0, editable=False)
     prev_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
     gross_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
 
-    # Recovery Breakdown
     advance_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
     retention_a_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
     retention_b_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
@@ -427,7 +409,8 @@ class InvoiceItem(models.Model):
         return money(self.prev_amount + self.gross_amount)
 
     def save(self, *args, **kwargs):
-        if not self.rate: self.rate = self.boq_item.rate
+        if not self.rate:
+            self.rate = self.boq_item.rate
         prior = InvoiceItem.objects.filter(boq_item=self.boq_item, invoice__project=self.invoice.project,
                                            invoice__inv_number__lt=self.invoice.inv_number,
                                            invoice__is_advance_invoice=False)
@@ -456,3 +439,357 @@ class InvoiceItem(models.Model):
         self.net_amount_value = money(
             self.gross_amount - self.retention_a_amount - self.retention_b_amount - self.advance_amount)
         super().save(*args, **kwargs)
+
+
+# =============================================================================
+# SECTION 2: EXPENSES
+# =============================================================================
+
+class ExpenseCategory(models.Model):
+    name = models.CharField(max_length=255, unique=True)
+    description = models.TextField(blank=True, null=True)
+
+    class Meta:
+        verbose_name = "Expense Category"
+        verbose_name_plural = "Expense Categories"
+
+    def __str__(self):
+        return self.name
+
+
+class SubExpense(models.Model):
+    parent = models.ForeignKey(ExpenseCategory, on_delete=models.CASCADE, related_name="sub_expenses")
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+
+    class Meta:
+        verbose_name = "Sub-Expense"
+        verbose_name_plural = "Sub-Expenses"
+        unique_together = ('parent', 'name')
+
+    def __str__(self):
+        return f"{self.parent.name} → {self.name}"
+
+
+class Expense(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="expenses")
+    boq_item = models.ForeignKey(BOQItem, on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
+    category = models.ForeignKey(ExpenseCategory, on_delete=models.PROTECT, related_name="expenses")
+    sub_category = models.ForeignKey(SubExpense, on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
+
+    date = models.DateField(default=date.today)
+    amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    description = models.TextField(blank=True, null=True)
+    reference_number = models.CharField(max_length=100, blank=True, null=True)
+    is_allocated = models.BooleanField(default=False, help_text="True when cost is absorbed into BOQ items")
+
+    class Meta:
+        verbose_name = "Expense"
+        verbose_name_plural = "Expenses"
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.category.name} — {self.project.project_id_code} — {self.amount:,.2f}"
+
+
+# =============================================================================
+# SECTION 3: PAYROLL & EMPLOYEES
+# =============================================================================
+
+class Employee(models.Model):
+    EMPLOYEE_TYPE_CHOICES = [
+        ('Staff', 'Office Staff'),
+        ('Site', 'Site Worker'),
+    ]
+    PAYMENT_TYPE_CHOICES = [
+        ('Bank', 'Bank Transfer'),
+        ('WPS', 'WPS Agency'),
+        ('Cash', 'Cash Payment'),
+    ]
+
+    employee_id = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=255)
+    employee_type = models.CharField(max_length=10, choices=EMPLOYEE_TYPE_CHOICES, default='Staff')
+    payment_type = models.CharField(max_length=10, choices=PAYMENT_TYPE_CHOICES, default='Bank')
+
+    project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True, related_name="employees")
+    is_head_office = models.BooleanField(default=False, help_text="Head Office staff are prorated across projects monthly")
+
+    basic_salary = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    housing_allowance = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    transport_allowance = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    other_allowances = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+
+    annual_benefits = models.DecimalField(max_digits=15, decimal_places=2, default=0, help_text="Annual benefits")
+    annual_eid_cost = models.DecimalField(max_digits=15, decimal_places=2, default=0, help_text="Annual Emirates ID")
+    annual_visa_cost = models.DecimalField(max_digits=15, decimal_places=2, default=0, help_text="Annual Visa")
+    annual_ticket_cost = models.DecimalField(max_digits=15, decimal_places=2, default=0, help_text="Annual Tickets")
+
+    date_joined = models.DateField(default=date.today)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Employee"
+        verbose_name_plural = "Employees"
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.employee_id} — {self.name}"
+
+    @property
+    def total_salary(self):
+        return money(self.basic_salary + self.housing_allowance + self.transport_allowance + self.other_allowances)
+
+    @property
+    def monthly_admin_cost(self):
+        total_annual = self.annual_benefits + self.annual_eid_cost + self.annual_visa_cost + self.annual_ticket_cost
+        return money(total_annual / Decimal("12"))
+
+    @property
+    def daily_cost(self):
+        total_monthly = self.total_salary + self.monthly_admin_cost
+        return money(total_monthly / Decimal("30"))
+
+    @property
+    def hourly_rate_ot(self):
+        if self.employee_type == 'Site':
+            return money(self.total_salary / Decimal("30") / Decimal("8"))
+        return Decimal("0.00")
+
+    @property
+    def daily_rate(self):
+        return money(self.total_salary / Decimal("30"))
+
+
+class PayrollRecord(models.Model):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="payroll_records")
+    month = models.DateField(help_text="First day of the month")
+
+    days_absent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    salary_advance = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    other_deduction = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    overtime_hours = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+
+    basic_salary_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    housing_allowance_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    transport_allowance_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    other_allowances_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    total_salary_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    overtime_amount_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    absence_deduction_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    net_salary_snap = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+
+    is_allocated = models.BooleanField(default=False)
+    allocated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('employee', 'month')
+        verbose_name = "Payroll Record"
+        verbose_name_plural = "Payroll Records"
+        ordering = ['-month', 'employee__name']
+
+    def __str__(self):
+        return f"{self.employee.name} — {self.month.strftime('%b %Y')}"
+
+    @property
+    def overtime_amount(self):
+        if self.employee.employee_type == 'Site' and self.overtime_hours > 0:
+            amt = self.overtime_hours * self.employee.hourly_rate_ot
+            return money(amt.quantize(Decimal("1"), rounding=ROUND_UP))
+        return Decimal("0.00")
+
+    @property
+    def absence_deduction(self):
+        if self.days_absent > 0:
+            return money(self.days_absent * self.employee.daily_rate)
+        return Decimal("0.00")
+
+    @property
+    def net_salary(self):
+        gross = self.employee.total_salary + self.overtime_amount
+        deductions = self.absence_deduction + self.salary_advance + self.other_deduction
+        return money(gross - deductions)
+
+    def save(self, *args, **kwargs):
+        self.basic_salary_snap = self.employee.basic_salary
+        self.housing_allowance_snap = self.employee.housing_allowance
+        self.transport_allowance_snap = self.employee.transport_allowance
+        self.other_allowances_snap = self.employee.other_allowances
+        self.total_salary_snap = self.employee.total_salary
+        self.overtime_amount_snap = self.overtime_amount
+        self.absence_deduction_snap = self.absence_deduction
+        self.net_salary_snap = self.net_salary
+        super().save(*args, **kwargs)
+
+
+class PayrollAllocation(models.Model):
+    payroll_record = models.ForeignKey(PayrollRecord, on_delete=models.CASCADE, related_name="allocations")
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="payroll_allocations")
+    boq_item = models.ForeignKey(BOQItem, on_delete=models.CASCADE, related_name="payroll_allocations")
+
+    salary_allocated = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    admin_cost_allocated = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    total_allocated = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+
+    project_work_done_pct = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    boq_item_work_done_pct = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Payroll Allocation"
+        verbose_name_plural = "Payroll Allocations"
+
+    def __str__(self):
+        return f"{self.payroll_record.employee.name} → {self.boq_item.item_number}"
+
+    def save(self, *args, **kwargs):
+        self.total_allocated = money(self.salary_allocated + self.admin_cost_allocated)
+        super().save(*args, **kwargs)
+
+
+# =============================================================================
+# SECTION 4: PRICING NEW PROJECTS
+# =============================================================================
+
+class PricingProject(models.Model):
+    project_name = models.CharField(max_length=255)
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="pricing_projects")
+    description = models.TextField(blank=True, null=True)
+    created_date = models.DateField(default=date.today)
+
+    reference_projects = models.ManyToManyField(Project, blank=True, related_name="pricing_references")
+
+    class Meta:
+        verbose_name = "Pricing Project"
+        verbose_name_plural = "Pricing Projects"
+
+    def __str__(self):
+        return f"PRICE-{self.project_name}"
+
+
+class PricingBOQItem(models.Model):
+    pricing_project = models.ForeignKey(PricingProject, on_delete=models.CASCADE, related_name="boq_items")
+
+    item_number = models.CharField(max_length=10)
+    description = models.TextField()
+    unit = models.CharField(max_length=10)
+    estimated_quantity = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    reference_boq_item = models.ForeignKey(BOQItem, on_delete=models.SET_NULL, null=True, blank=True, related_name="pricing_references")
+
+    historical_rate = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+    historical_cost = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False, help_text="Cost per unit from past payroll + expenses")
+    proposed_rate = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    proposed_total = models.DecimalField(max_digits=15, decimal_places=2, default=0, editable=False)
+
+    class Meta:
+        verbose_name = "Pricing BOQ Item"
+        verbose_name_plural = "Pricing BOQ Items"
+        ordering = ['item_number']
+
+    def save(self, *args, **kwargs):
+        if self.reference_boq_item:
+            self.historical_rate = self.reference_boq_item.rate
+            payroll_total = PayrollAllocation.objects.filter(boq_item=self.reference_boq_item).aggregate(t=Sum('total_allocated'))['t'] or Decimal("0")
+            expense_total = Expense.objects.filter(boq_item=self.reference_boq_item).aggregate(t=Sum('amount'))['t'] or Decimal("0")
+            qty = self.reference_boq_item.quantity
+            if qty > 0:
+                self.historical_cost = money((payroll_total + expense_total) / qty)
+        self.proposed_total = money(self.estimated_quantity * self.proposed_rate)
+        super().save(*args, **kwargs)
+
+
+# =============================================================================
+# PAYROLL ALLOCATION FUNCTIONS
+# =============================================================================
+
+def allocate_payroll(payroll_record):
+    employee = payroll_record.employee
+    month_start = payroll_record.month
+    last_day = calendar.monthrange(month_start.year, month_start.month)[1]
+    month_end = month_start.replace(day=last_day)
+
+    month_invoices = Invoice.objects.filter(
+        date__gte=month_start,
+        date__lte=month_end,
+        is_advance_invoice=False
+    ).select_related('project')
+
+    if employee.is_head_office:
+        project_work = {}
+        total_work = Decimal("0")
+
+        for inv in month_invoices:
+            work = inv.current_gross_total
+            if work > 0:
+                pid = inv.project_id
+                project_work[pid] = project_work.get(pid, Decimal("0")) + work
+                total_work += work
+
+        if total_work == 0:
+            return False
+
+        salary = payroll_record.net_salary_snap
+        admin = employee.monthly_admin_cost
+
+        for pid, work in project_work.items():
+            project = Project.objects.get(pk=pid)
+            pct = money(work / total_work)
+            proj_salary = money(salary * pct)
+            proj_admin = money(admin * pct)
+            _allocate_to_boq_items(payroll_record, project, proj_salary, proj_admin)
+
+        payroll_record.is_allocated = True
+        payroll_record.allocated_at = timezone.now()
+        payroll_record.save()
+        return True
+
+    elif employee.project:
+        salary = payroll_record.net_salary_snap
+        admin = employee.monthly_admin_cost
+        _allocate_to_boq_items(payroll_record, employee.project, salary, admin)
+
+        payroll_record.is_allocated = True
+        payroll_record.allocated_at = timezone.now()
+        payroll_record.save()
+        return True
+
+    return False
+
+
+def _allocate_to_boq_items(payroll_record, project, salary_amt, admin_amt):
+    boq_items = BOQItem.objects.filter(project=project)
+    total_boq_value = sum(boq.quantity * boq.rate for boq in boq_items)
+
+    if total_boq_value == 0 or boq_items.count() == 0:
+        count = boq_items.count() or 1
+        per_item_sal = money(salary_amt / count)
+        per_item_adm = money(admin_amt / count)
+        for boq in boq_items:
+            PayrollAllocation.objects.create(
+                payroll_record=payroll_record,
+                project=project,
+                boq_item=boq,
+                salary_allocated=per_item_sal,
+                admin_cost_allocated=per_item_adm,
+                project_work_done_pct=Decimal("100"),
+                boq_item_work_done_pct=money(Decimal("100") / count)
+            )
+        return
+
+    for boq in boq_items:
+        boq_value = boq.quantity * boq.rate
+        boq_pct = money(boq_value / total_boq_value)
+        item_sal = money(salary_amt * boq_pct)
+        item_adm = money(admin_amt * boq_pct)
+
+        PayrollAllocation.objects.create(
+            payroll_record=payroll_record,
+            project=project,
+            boq_item=boq,
+            salary_allocated=item_sal,
+            admin_cost_allocated=item_adm,
+            project_work_done_pct=Decimal("100"),
+            boq_item_work_done_pct=boq_pct * 100
+        )

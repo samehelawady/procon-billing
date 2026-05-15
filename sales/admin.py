@@ -2,15 +2,22 @@ from django.contrib import admin
 from django.forms import TextInput
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import Client, Project, BOQItem, Invoice, InvoiceItem, CompanyProfile, money
+from .models import (
+    Client, Project, BOQItem, Invoice, InvoiceItem, CompanyProfile, money,
+    ExpenseCategory, SubExpense, Expense,
+    Employee, PayrollRecord, PayrollAllocation,
+    PricingProject, PricingBOQItem
+)
 from django.urls import reverse
 from decimal import Decimal
 from django.db.models import Sum
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.urls import path
-from datetime import date
-
+from datetime import date, timedelta
+from django.contrib import messages
+from django.shortcuts import redirect
+from django import forms
 
 # --- BRANDING ---
 admin.site.site_header = "Procon General Contracting LLC"
@@ -22,9 +29,6 @@ admin.site.index_title = "Billing & Project Management Portal"
 class ClientAdmin(admin.ModelAdmin):
     list_display = ["name", "contact_person", "vat_number", "statement_button", "outstanding_button", "progress_button"]
 
-    # -----------------------------------------------------------------
-    # REPORT BUTTONS
-    # -----------------------------------------------------------------
     def statement_button(self, obj):
         url = reverse('admin:client_statement', args=[obj.pk])
         return format_html(
@@ -46,9 +50,6 @@ class ClientAdmin(admin.ModelAdmin):
             url)
     progress_button.short_description = "Prog"
 
-    # -----------------------------------------------------------------
-    # REPORT VIEWS
-    # -----------------------------------------------------------------
     def get_urls(self):
         urls = super().get_urls()
         custom = [
@@ -316,13 +317,65 @@ class BOQItemInline(admin.TabularInline):
     extra = 1
 
 
-# =============================================================================
+class ExpenseInlineForm(forms.ModelForm):
+    """Custom form that filters boq_item and sub_category based on parent project."""
+
+    class Meta:
+        model = Expense
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Filter boq_item by the parent project (from inline instance or initial)
+        project = None
+
+        # If editing existing expense
+        if self.instance and self.instance.pk and self.instance.project:
+            project = self.instance.project
+        # If adding new expense in project inline, get project from parent
+        elif self.initial.get('project'):
+            try:
+                project = Project.objects.get(pk=self.initial['project'])
+            except Project.DoesNotExist:
+                pass
+
+        if project:
+            self.fields['boq_item'].queryset = BOQItem.objects.filter(project=project)
+        else:
+            self.fields['boq_item'].queryset = BOQItem.objects.none()
+
+        # Filter sub_category by category
+        if self.instance and self.instance.pk and self.instance.category:
+            self.fields['sub_category'].queryset = SubExpense.objects.filter(parent=self.instance.category)
+        else:
+            self.fields['sub_category'].queryset = SubExpense.objects.none()
+
+
+class ExpenseInline(admin.TabularInline):
+    model = Expense
+    form = ExpenseInlineForm
+    extra = 0
+    fields = ["date", "category", "sub_category", "amount", "boq_item", "description", "is_allocated"]
+
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        if obj:
+            # Store project on formset class for form access
+            formset.parent_project = obj
+        return formset
+
 @admin.register(CompanyProfile)
 class CompanyProfileAdmin(admin.ModelAdmin):
-    list_display = ["company_name", "trn_number", "phone","bank"]
+    list_display = ["company_name", "trn_number", "phone", "bank"]
+    fields = ["company_name", "logo", "letter_header", "letter_footer",
+              "trn_number", "address", "bank", "phone", "email", "website"]
 
 
 # =============================================================================
+# AJAX ENDPOINTS FOR DYNAMIC DROPDOWNS
+# =============================================================================
+
 @admin.register(BOQItem)
 class BOQItemAdmin(admin.ModelAdmin):
     search_fields = ["item_number", "description"]
@@ -330,25 +383,39 @@ class BOQItemAdmin(admin.ModelAdmin):
 
     def fmt_qty(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity:,.2f}</div>')
-
     fmt_qty.short_description = "Qty"
 
     def fmt_rate(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.rate:,.2f}</div>')
-
     fmt_rate.short_description = "Rate"
 
     def fmt_total(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity * obj.rate:,.2f}</div>')
-
     fmt_total.short_description = "Total"
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path('get-by-project/', self.admin_site.admin_view(self.get_by_project), name='boqitem_get_by_project'),
+        ]
+        return custom + urls
+
+    def get_by_project(self, request):
+        from django.http import JsonResponse
+        project_id = request.GET.get('project_id')
+        if not project_id:
+            return JsonResponse([], safe=False)
+        items = BOQItem.objects.filter(project_id=project_id).values('id', 'item_number', 'description')
+        data = [{'id': item['id'], 'text': f"{item['item_number']} - {item['description'][:40]}"} for item in items]
+        return JsonResponse(data, safe=False)
 
 
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    inlines = [BOQItemInline]
+    inlines = [BOQItemInline, ExpenseInline]
     list_display = [
-        "project_id_code", "view_invoices", "analytics_button", "project_name", "client", "fmt_po",
+        "project_id_code", "view_invoices", "analytics_button", "cost_profit_button",
+        "project_name", "client", "fmt_po",
         "fmt_boq_total", "is_boq_complete", "fmt_advance",
         "fmt_ret_a_pct", "fmt_ret_b_pct"
     ]
@@ -361,7 +428,6 @@ class ProjectAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" style="background:#447e9b; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Invoices</a>',
             url)
-
     view_invoices.short_description = "Action"
 
     def analytics_button(self, obj):
@@ -371,12 +437,203 @@ class ProjectAdmin(admin.ModelAdmin):
             url)
     analytics_button.short_description = "Analytics"
 
-    def get_urls(self):
-        urls = super().get_urls()
-        custom = [
-            path('<int:pk>/analytics/', self.admin_site.admin_view(self.analytics_view), name='project_analytics'),
-        ]
-        return custom + urls
+    def cost_profit_button(self, obj):
+        url = reverse('admin:project_cost_profit', args=[obj.pk])
+        return format_html(
+            '<a class="button" href="{}" target="_blank" style="background:#d32f2f; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Cost & P&L</a>',
+            url)
+    cost_profit_button.short_description = "Cost"
+
+    def cost_profit_view(self, request, pk):
+        from django.db.models import Sum
+        proj = get_object_or_404(Project, pk=pk)
+        company = CompanyProfile.objects.first()
+        header_img_url = company.letter_header.url if company and company.letter_header else ''
+        footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
+
+        latest_inv = Invoice.objects.filter(
+            project=proj, is_advance_invoice=False
+        ).order_by('-inv_number').first()
+
+        boq_items = BOQItem.objects.filter(project=proj).order_by('item_number')
+
+        rows = ""
+        grand_revenue = Decimal("0")
+        grand_expenses = Decimal("0")
+        grand_profit = Decimal("0")
+
+        for boq in boq_items:
+            inv_items = InvoiceItem.objects.filter(
+                boq_item=boq,
+                invoice__project=proj,
+                invoice__is_advance_invoice=False
+            )
+
+            cum_qty = inv_items.aggregate(total=Sum('current_qty'))['total'] or Decimal("0")
+            cum_amt = inv_items.aggregate(total=Sum('gross_amount'))['total'] or Decimal("0")
+            revenue = money(cum_amt)
+
+            direct_expenses = Expense.objects.filter(
+                boq_item=boq, project=proj
+            ).aggregate(total=Sum('amount'))['total'] or Decimal("0")
+
+            payroll_allocations = PayrollAllocation.objects.filter(
+                boq_item=boq, project=proj
+            ).aggregate(total=Sum('total_allocated'))['total'] or Decimal("0")
+
+            total_expenses = money(direct_expenses + payroll_allocations)
+            profit_loss = money(revenue - total_expenses)
+            profit_pct = (profit_loss / revenue * 100) if revenue > 0 else Decimal("0")
+
+            profit_color = "#2e7d32" if profit_loss >= 0 else "#d32f2f"
+            profit_icon = "▲" if profit_loss >= 0 else "▼"
+
+            grand_revenue += revenue
+            grand_expenses += total_expenses
+            grand_profit += profit_loss
+
+            rows += f"""
+                <tr>
+                    <td class='col-item'>{boq.item_number}</td>
+                    <td class='col-desc'>{boq.description}</td>
+                    <td class='col-unit'>{boq.unit}</td>
+                    <td class='col-num'>{boq.quantity:,.2f}</td>
+                    <td class='col-num'>{boq.rate:,.2f}</td>
+                    <td class='col-num'>{boq.quantity * boq.rate:,.2f}</td>
+                    <td class='col-num'>{cum_qty:,.2f}</td>
+                    <td class='col-num' style='color:#000080; font-weight:bold;'>{revenue:,.2f}</td>
+                    <td class='col-num' style='color:#ed6c02;'>{direct_expenses:,.2f}</td>
+                    <td class='col-num' style='color:#ed6c02;'>{payroll_allocations:,.2f}</td>
+                    <td class='col-num' style='font-weight:bold;'>{total_expenses:,.2f}</td>
+                    <td class='col-num' style='color:{profit_color}; font-weight:bold; font-size:11px;'>
+                        {profit_icon} {profit_loss:,.2f}
+                    </td>
+                    <td class='col-num' style='color:{profit_color};'>{profit_pct:.1f}%</td>
+                </tr>
+                """
+
+        grand_profit_pct = (grand_profit / grand_revenue * 100) if grand_revenue > 0 else Decimal("0")
+        grand_color = "#2e7d32" if grand_profit >= 0 else "#d32f2f"
+
+        po_amount = proj.po_amount
+        total_work_done = latest_inv.cumulative_work_done if latest_inv else Decimal("0")
+        balance = money(po_amount - total_work_done)
+        progress_pct = (total_work_done / po_amount * 100) if po_amount > 0 else Decimal("0")
+
+        html = f"""<!DOCTYPE html>
+    <html><head><meta charset="UTF-8">
+    <style>
+        @page {{ size: A4 landscape; margin: 15mm 10mm 15mm 10mm;
+            @top-center {{ content: element(page-header); vertical-align: top; }}
+            @bottom-center {{ content: element(page-footer); vertical-align: bottom; }}
+        }}
+        #page-header {{ position: running(page-header); width: 100%; text-align: center; margin-bottom: 6px; }}
+        #page-header img {{ max-height: 100px; width: 100%; object-fit: contain; }}
+        #page-footer {{ position: running(page-footer); width: 100%; text-align: center; margin-top: 6px; }}
+        #page-footer img {{ max-height: 80px; width: 100%; object-fit: contain; }}
+        * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+        body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; color: #222; padding: 15px; }}
+        .report-title {{ font-size: 20px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
+        .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 12px; }}
+        .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; line-height: 1.5; font-size: 10px; display: flex; justify-content: space-between; }}
+        .meta-left {{ flex: 1; }}
+        .meta-right {{ flex: 1; text-align: right; }}
+        .dashboard {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 15px; }}
+        .dash-card {{ border: 1px solid #ccc; border-radius: 6px; padding: 10px; text-align: center; background: #fafafa; }}
+        .dash-label {{ font-size: 7px; color: #666; text-transform: uppercase; margin-bottom: 4px; }}
+        .dash-value {{ font-size: 14px; font-weight: bold; color: #000080; }}
+        .dash-sub {{ font-size: 8px; color: #666; margin-top: 3px; }}
+        .section-header {{ font-size: 11px; font-weight: bold; color: #000080; margin: 15px 0 6px 0; border-bottom: 2px solid #000080; padding-bottom: 3px; }}
+        .report-table {{ width: 100%; border-collapse: collapse; font-size: 8px; margin-top: 4px; }}
+        .report-table th {{ background: #e8e8e8; border: 1px solid #999; padding: 4px 3px; font-weight: bold; text-align: center; font-size: 7.5px; }}
+        .report-table td {{ border: 1px solid #ccc; padding: 3px 4px; vertical-align: top; }}
+        .report-table .num {{ text-align: right; white-space: nowrap; }}
+        .report-table tr:nth-child(even) {{ background: #fafafa; }}
+        .col-item {{ width: 5%; text-align: center; }}
+        .col-desc {{ width: 22%; text-align: left; }}
+        .col-unit {{ width: 4%; text-align: center; }}
+        .col-num {{ width: 7%; text-align: right; }}
+        .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; font-size: 9px; }}
+        .grand-total-row td {{ background: {grand_color}; color: white; font-weight: bold; border-top: 3px solid #333; font-size: 11px; }}
+        .legend {{ margin-top: 10px; padding: 8px; background: #f9f9f9; border-radius: 4px; font-size: 8px; }}
+        .legend-item {{ display: inline-block; margin-right: 15px; }}
+        .legend-color {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }}
+        .bar-track {{ width: 100%; height: 16px; background: #e0e0e0; border-radius: 8px; overflow: hidden; margin-top: 4px; }}
+        .bar-fill {{ height: 100%; background: linear-gradient(90deg, #447e9b, #2e7d32); border-radius: 8px; }}
+        @media print {{ .no-print {{ display: none; }} }}
+    </style></head><body>
+        <div id="page-header">{"<img src='" + header_img_url + "' alt='Header'>" if header_img_url else ""}</div>
+        <div class="report-title">PROJECT COST & PROFITABILITY ANALYSIS</div>
+        <div class="report-subtitle">{proj.project_id_code} — {proj.project_name}</div>
+        <div class="meta-box">
+            <div class="meta-left">
+                <b>Client:</b> {proj.client.name}<br>
+                <b>PO Number:</b> {proj.po_number or 'N/A'}<br>
+                <b>PO Amount:</b> {po_amount:,.2f}
+            </div>
+            <div class="meta-right">
+                <b>Report Date:</b> {date.today().strftime('%d-%b-%Y')}<br>
+                <b>BOQ Items:</b> {boq_items.count()}<br>
+                <b>Project Progress:</b> {progress_pct:.1f}%
+            </div>
+        </div>
+        <div class="dashboard">
+            <div class="dash-card"><div class="dash-label">Total Revenue</div><div class="dash-value" style="color:#000080;">{grand_revenue:,.2f}</div></div>
+            <div class="dash-card"><div class="dash-label">Total Expenses</div><div class="dash-value" style="color:#ed6c02;">{grand_expenses:,.2f}</div></div>
+            <div class="dash-card"><div class="dash-label">Net Profit / Loss</div><div class="dash-value" style="color:{grand_color};">{grand_profit:,.2f}</div></div>
+            <div class="dash-card"><div class="dash-label">Profit Margin</div><div class="dash-value" style="color:{grand_color};">{grand_profit_pct:.1f}%</div></div>
+            <div class="dash-card"><div class="dash-label">Balance to Complete</div><div class="dash-value" style="color:#d32f2f;">{balance:,.2f}</div><div class="dash-sub">of {po_amount:,.2f} PO</div></div>
+        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:{min(float(progress_pct), 100)}%;"></div></div>
+        <div class="section-header">BOQ Item Cost Breakdown</div>
+        <table class="report-table">
+            <thead>
+                <tr>
+                    <th rowspan="2" class="col-item">Item</th>
+                    <th rowspan="2" class="col-desc">Description</th>
+                    <th rowspan="2" class="col-unit">Unit</th>
+                    <th rowspan="2" class="col-num">BOQ Qty</th>
+                    <th rowspan="2" class="col-num">Rate</th>
+                    <th rowspan="2" class="col-num">BOQ Value</th>
+                    <th colspan="2" style="background:#447e9b; color:white;">REVENUE (Work Done)</th>
+                    <th colspan="3" style="background:#ed6c02; color:white;">EXPENSES</th>
+                    <th colspan="2" style="background:{grand_color}; color:white;">PROFIT / LOSS</th>
+                </tr>
+                <tr>
+                    <th class="col-num">Cum. Qty</th>
+                    <th class="col-num">Amount</th>
+                    <th class="col-num">Direct</th>
+                    <th class="col-num">Payroll</th>
+                    <th class="col-num">Total</th>
+                    <th class="col-num">Amount</th>
+                    <th class="col-num">%</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+            <tfoot>
+                <tr class="total-row">
+                    <td colspan="7"><b>GRAND TOTALS</b></td>
+                    <td class='col-num'><b>{grand_revenue:,.2f}</b></td>
+                    <td class='col-num'></td>
+                    <td class='col-num'></td>
+                    <td class='col-num'><b>{grand_expenses:,.2f}</b></td>
+                    <td class='col-num' style='color:{grand_color}; font-size:11px;'><b>{grand_profit:,.2f}</b></td>
+                    <td class='col-num' style='color:{grand_color};'><b>{grand_profit_pct:.1f}%</b></td>
+                </tr>
+            </tfoot>
+        </table>
+        <div class="legend">
+            <div class="legend-item"><span class="legend-color" style="background:#447e9b;"></span> Revenue = Cumulative work done (invoice gross amount)</div>
+            <div class="legend-item"><span class="legend-color" style="background:#ed6c02;"></span> Direct Expenses = Costs linked to BOQ item + Payroll allocations</div>
+            <div class="legend-item"><span class="legend-color" style="background:#2e7d32;"></span> Profit = Revenue − Expenses</div>
+            <div class="legend-item"><span class="legend-color" style="background:#d32f2f;"></span> Loss = Negative profit (expenses exceed revenue)</div>
+        </div>
+        <div id="page-footer">{"<img src='" + footer_img_url + "' alt='Footer'>" if footer_img_url else ""}</div>
+        <script>window.onload = function() {{ window.print(); }}</script>
+    </body></html>"""
+        return HttpResponse(html)
+
+
 
     def analytics_view(self, request, pk):
         proj = get_object_or_404(Project, pk=pk)
@@ -550,21 +807,27 @@ class ProjectAdmin(admin.ModelAdmin):
     </table>
     <div id="page-footer">{"<img src='" + footer_img_url + "' alt='Footer'>" if footer_img_url else ""}</div>
 </body></html>"""
+
         return HttpResponse(html)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path('<int:pk>/analytics/', self.admin_site.admin_view(self.analytics_view), name='project_analytics'),
+
+            path('<int:pk>/cost-profit/', self.admin_site.admin_view(self.cost_profit_view), name='project_cost_profit'),
+        ]
+        return custom + urls
 
     def fmt_po(self, obj):
         return mark_safe(f'<div style="text-align: right; font-weight: bold;">{obj.po_amount:,.2f}</div>')
-
-    fmt_po.short_description = 'PO Amount'  # Sets the column header name
-    fmt_po.admin_order_field = 'po_amount'  # Keeps the column sortable
-
-    fmt_po.short_description = "PO Amount"
+    fmt_po.short_description = 'PO Amount'
+    fmt_po.admin_order_field = 'po_amount'
 
     def fmt_boq_total(self, obj):
         val = obj.boq_total_value
         color = "green" if obj.is_boq_complete else "red"
         return mark_safe(f'<span style="color: {color}; font-weight: bold; float: right;">{val:,.2f}</span>')
-
     fmt_boq_total.short_description = "BOQ Total"
 
     def fmt_advance(self, obj):
@@ -627,7 +890,6 @@ class InvoiceItemInline(admin.TabularInline):
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
     inlines = [InvoiceItemInline]
-    # RESTORED: status and inv_type to list_display
     list_display = [
         "fmt_inv_str", "project", "inv_type", "status", "retention_recovery",
         "ui_cumulative_work", "ui_total_invoiced", "ui_previously_invoiced", "ui_subtotal_no_vat",
@@ -699,9 +961,6 @@ class InvoiceAdmin(admin.ModelAdmin):
     def ui_retention_b(self, obj):
         return "({:,.2f})".format(obj.current_retention_b)
 
-    # -----------------------------------------------------------------
-    # NEW: Retention Recovery UI Methods
-    # -----------------------------------------------------------------
     def ui_retention_a_recovery(self, obj):
         if obj.retention_recovery == 'A':
             val = obj.current_retention_a_recovery
@@ -720,7 +979,6 @@ class InvoiceAdmin(admin.ModelAdmin):
 
     def fmt_inv_str(self, obj):
         return format_html('<div style="font-weight: bold; width:120px;">{}</div>', str(obj))
-
     fmt_inv_str.short_description = "Invoice ID"
 
     def print_button(self, obj):
@@ -728,7 +986,6 @@ class InvoiceAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" target="_blank" style="background:#447e9b; color:white; padding: 2px 8px; border-radius: 4px;">Print</a>',
             url)
-
     print_button.short_description = "Report"
 
     def get_urls(self):
@@ -737,13 +994,8 @@ class InvoiceAdmin(admin.ModelAdmin):
 
     def print_view(self, request, pk):
         inv = get_object_or_404(Invoice, pk=pk)
-
         company = CompanyProfile.objects.first()
-        # Determine Title Header based on inv_type
-        if inv.inv_type == "P":
-            header_title = "PROFORMA INVOICE"
-        else:
-            header_title = "TAX INVOICE"
+        header_title = "PROFORMA INVOICE" if inv.inv_type == "P" else "TAX INVOICE"
 
         all_boq = BOQItem.objects.filter(project=inv.project).order_by('item_number')
         items_map = {item.boq_item.id: item for item in inv.items.all()}
@@ -772,7 +1024,7 @@ class InvoiceAdmin(admin.ModelAdmin):
             rows += f"""<tr>
                 <td class='col-item'>{boq.item_number}</td>
                 <td class='col-desc'>{boq.description}</td>
-                <td class='col-unit'>{boq.unit}</td> 
+                <td class='col-unit'>{boq.unit}</td>
                 <td class='col-num'>{boq.quantity:,.2f}</td>
                 <td class='col-num'>{boq.rate:,.0f}</td>
                 <td class='col-num'>{p_pct:,.0f}%</td>
@@ -783,7 +1035,6 @@ class InvoiceAdmin(admin.ModelAdmin):
                 <td class='col-num'>{(p_amt + c_amt):,.2f}</td>
             </tr>"""
 
-        # Build footer rows with retention recovery
         footer_rows = f"""
             <tr class='total-row'>
                 <td colspan='6' class='col-label'>GROSS WORK DONE</td>
@@ -811,7 +1062,6 @@ class InvoiceAdmin(admin.ModelAdmin):
             </tr>
         """
 
-        # Add retention recovery rows if applicable
         if inv.retention_recovery == 'A':
             footer_rows += f"""
             <tr style='background:#e8f5e9;'>
@@ -841,315 +1091,76 @@ class InvoiceAdmin(admin.ModelAdmin):
             </tr>
         """
 
-        # Header image URL
         header_img_url = company.letter_header.url if company and company.letter_header else ''
         footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
+        logo_url = company.logo.url if company and company.logo else ''
 
         html = f"""<!DOCTYPE html>
     <html>
     <head>
     <meta charset="UTF-8">
     <style>
-        /* ============================================
-           CRITICAL: Page setup with margins
-           ============================================ */
         @page {{
-            size: A4 landscape;  /* or portrait - change as needed */
+            size: A4 landscape;
             margin: 18mm 10mm 18mm 10mm;
-
-            /* Running headers/footers for WeasyPrint */
-            @top-center {{
-                content: element(page-header);
-                vertical-align: top;
-            }}
-            @bottom-center {{
-                content: element(page-footer);
-                vertical-align: bottom;
-            }}
+            @top-center {{ content: element(page-header); vertical-align: top; }}
+            @bottom-center {{ content: element(page-footer); vertical-align: bottom; }}
         }}
-
-        /* ============================================
-           RUNNING HEADER & FOOTER
-           These appear on EVERY page automatically
-           ============================================ */
-        #page-header {{
-            position: running(page-header);
-            width: 100%;
-            text-align: center;
-            margin-bottom: 8px;
-        }}
-
-        #page-header img {{
-            max-height: 130px;
-            width: 100%;
-            object-fit: contain;
-        }}
-
-        #page-footer {{
-            position: running(page-footer);
-            width: 100%;
-            text-align: center;
-            margin-top: 8px;
-        }}
-
-        #page-footer img {{
-            max-height: 100px;
-            width: 100%;
-            object-fit: contain;
-        }}
-
-        /* ============================================
-           BASE STYLES
-           ============================================ */
-        * {{
-            box-sizing: border-box;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-            margin: 0;
-            padding: 0;
-        }}
-
-        body {{
-            font-family: "Segoe UI", Arial, Helvetica, sans-serif;
-            font-size: 8.5px;
-            line-height: 1.3;
-            color: #222;
-            width: 100%;
-        }}
-
-        /* ============================================
-           INVOICE HEADER (content header, not page header)
-           ============================================ */
-        .invoice-title {{
-            font-size: 15px;
-            font-weight: bold;
-            text-align: center;
-            margin: 8px 0 12px 0;
-            color: #000080;
-            letter-spacing: 1px;
-        }}
-
-        .invoice-meta {{
-            margin-bottom: 10px;
-        }}
-
-        .invoice-meta-row {{
-            font-size: 11px;
-            font-weight: bold;
-            margin-bottom: 4px;
-        }}
-
-        .parties-row {{
-            display: flex;
-            justify-content: space-between;
-            margin: 10px 0;
-            gap: 20px;
-        }}
-
-        .party-block {{
-            flex: 1;
-        }}
-
-        .party-name {{
-            font-size: 13px;
-            font-weight: bold;
-            margin-bottom: 3px;
-        }}
-
-        .party-detail {{
-            font-size: 10px;
-            margin-bottom: 2px;
-        }}
-
-        .project-name {{
-            font-size: 10px;
-            margin: 8px 0 10px 0;
-        }}
-
-        .section-title {{
-            text-align: center;
-            font-size: 13px;
-            font-weight: bold;
-            margin: 8px 0 6px 0;
-            color: #111;
-        }}
-
-        /* ============================================
-           TABLE - FIXED RIGHT BORDER ISSUE
-           ============================================ */
-        .boq-table {{
-            width: 100%;
-            max-width: 100%;
-            border-collapse: collapse;
-            margin-top: 6px;
-            font-size: 8px;
-            table-layout: fixed;  /* CRITICAL: prevents overflow */
-        }}
-
-        .boq-table thead {{
-            display: table-header-group;  /* Repeats on every page */
-        }}
-
-        .boq-table th {{
-            background: #e8e8e8;
-            border: 1px solid #666;
-            padding: 4px 2px;
-            font-weight: bold;
-            text-align: center;
-            font-size: 7.5px;
-            word-wrap: break-word;
-        }}
-
-        .boq-table td {{
-            border: 1px solid #666;
-            padding: 3px 4px;
-            vertical-align: top;
-        }}
-
-        /* Column widths - CRITICAL for preventing overflow */
+        #page-header {{ position: running(page-header); width: 100%; text-align: center; margin-bottom: 8px; }}
+        #page-header img {{ max-height: 130px; width: 100%; object-fit: contain; }}
+        #page-footer {{ position: running(page-footer); width: 100%; text-align: center; margin-top: 8px; }}
+        #page-footer img {{ max-height: 100px; width: 100%; object-fit: contain; }}
+        * {{ box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; margin: 0; padding: 0; }}
+        body {{ font-family: "Segoe UI", Arial, Helvetica, sans-serif; font-size: 8.5px; line-height: 1.3; color: #222; width: 100%; }}
+        .watermark {{ position: fixed; top: 10%; left: 50%; transform: translate(-50%, -50%); width: 550px; opacity: 0.0; z-index: -1; pointer-events: none; }}
+        .watermark img {{ width: 100%; }}
+        .invoice-title {{ font-size: 15px; font-weight: bold; text-align: center; margin: 8px 0 12px 0; color: #000080; letter-spacing: 1px; }}
+        .invoice-meta {{ margin-bottom: 10px; }}
+        .invoice-meta-row {{ font-size: 11px; font-weight: bold; margin-bottom: 4px; }}
+        .parties-row {{ display: flex; justify-content: space-between; margin: 10px 0; gap: 20px; }}
+        .party-block {{ flex: 1; }}
+        .party-name {{ font-size: 13px; font-weight: bold; margin-bottom: 3px; }}
+        .party-detail {{ font-size: 10px; margin-bottom: 2px; }}
+        .project-name {{ font-size: 10px; margin: 8px 0 10px 0; }}
+        .section-title {{ text-align: center; font-size: 13px; font-weight: bold; margin: 8px 0 6px 0; color: #111; }}
+        .boq-table {{ width: 100%; max-width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 8px; table-layout: fixed; }}
+        .boq-table thead {{ display: table-header-group; }}
+        .boq-table th {{ background: #e8e8e8; border: 1px solid #666; padding: 4px 2px; font-weight: bold; text-align: center; font-size: 7.5px; word-wrap: break-word; }}
+        .boq-table td {{ border: 1px solid #666; padding: 3px 4px; vertical-align: top; }}
         .col-item {{ width: 4%; text-align: center; }}
         .col-desc {{ width: 32%; text-align: left; }}
         .col-unit {{ width: 5%; text-align: center; }}
         .col-num {{ width: 6.5%; text-align: right; white-space: nowrap; }}
         .col-label {{ text-align: right; font-weight: bold; padding-right: 8px; }}
-
-        /* Description cell - smaller font */
-        .boq-table td.col-desc {{
-            font-size: 6px;
-            line-height: 1.2;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            hyphens: auto;
-        }}
-
-        /* Total rows */
-        .total-row td {{
-            font-weight: bold;
-            background: #f0f0f0;
-            border-top: 2px solid #333;
-        }}
-
-        .grand-total-row td {{
-            font-weight: bold;
-            background: #f5f5f5;
-            border-top: 2px solid #333;
-            border-bottom: 2px solid #333;
-        }}
-
-        /* Prevent row splitting across pages */
-        .boq-table tr {{
-            page-break-inside: avoid;
-        }}
-
-        /* ============================================
-           SUMMARY BOXES
-           ============================================ */
-        .summary-wrapper {{
-            display: flex;
-            justify-content: space-between;
-            margin-top: 15px;
-            gap: 15px;
-            page-break-inside: avoid;
-        }}
-
-        .summary-box {{
-            border: 1px solid #666;
-            padding: 8px 12px;
-        }}
-
-        .summary-box.bank {{
-            flex: 1;
-            max-width: 45%;
-        }}
-
-        .summary-box.totals {{
-            flex: 1;
-            max-width: 45%;
-            margin-left: auto;
-        }}
-
-        .summary-box-title {{
-            font-weight: bold;
-            margin-bottom: 5px;
-            text-decoration: underline;
-            font-size: 9px;
-        }}
-
-        .summary-row {{
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 4px;
-            font-size: 9px;
-        }}
-
-        .summary-row.border-top {{
-            border-top: 1px solid #333;
-            margin-top: 5px;
-            padding-top: 5px;
-        }}
-
-        .red-text {{
-            color: #000080;
-            font-weight: bold;
-            font-size: 1.4em;
-        }}
-
-        .bank-content {{
-            font-family: "Courier New", monospace;
-            font-size: 10px;
-            font-weight: bold;
-            color: #000080;
-            line-height: 1.4;
-        }}
-
-        /* ============================================
-           PAGE BREAK CONTROL
-           ============================================ */
-        .page-break-avoid {{
-            page-break-inside: avoid;
-        }}
-
-        /* ============================================
-           FALLBACK FOR BROWSER PRINT
-           If using browser print instead of WeasyPrint
-           ============================================ */
+        .boq-table td.col-desc {{ font-size: 6px; line-height: 1.2; word-wrap: break-word; overflow-wrap: break-word; hyphens: auto; }}
+        .total-row td {{ font-weight: bold; background: #f0f0f0; border-top: 2px solid #333; }}
+        .grand-total-row td {{ font-weight: bold; background: #f5f5f5; border-top: 2px solid #333; border-bottom: 2px solid #333; }}
+        .boq-table tr {{ page-break-inside: avoid; }}
+        .summary-wrapper {{ display: flex; justify-content: space-between; margin-top: 15px; gap: 15px; page-break-inside: avoid; }}
+        .summary-box {{ border: 1px solid #666; padding: 8px 12px; }}
+        .summary-box.bank {{ flex: 1; max-width: 45%; }}
+        .summary-box.totals {{ flex: 1; max-width: 45%; margin-left: auto; }}
+        .summary-box-title {{ font-weight: bold; margin-bottom: 5px; text-decoration: underline; font-size: 9px; }}
+        .summary-row {{ display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 9px; }}
+        .summary-row.border-top {{ border-top: 1px solid #333; margin-top: 5px; padding-top: 5px; }}
+        .red-text {{ color: #000080; font-weight: bold; font-size: 1.4em; }}
+        .bank-content {{ font-family: "Courier New", monospace; font-size: 10px; font-weight: bold; color: #000080; line-height: 1.4; }}
+        .page-break-avoid {{ page-break-inside: avoid; }}
         @media print {{
-            #page-header {{
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-            }}
-
-            #page-footer {{
-                position: fixed;
-                bottom: 0;
-                left: 0;
-                right: 0;
-            }}
-
-            body {{
-                padding-top: 140px;
-                padding-bottom: 110px;
-            }}
+            #page-header {{ position: fixed; top: 0; left: 0; right: 0; }}
+            #page-footer {{ position: fixed; bottom: 0; left: 0; right: 0; }}
+            body {{ padding-top: 140px; padding-bottom: 110px; }}
         }}
-
     </style>
     </head>
     <body>
-
-        <!-- ============================================
-             RUNNING PAGE HEADER - Appears on EVERY page
-             ============================================ -->
+        <div class="watermark">
+            {"<img src='" + logo_url + "' alt='Watermark'>" if logo_url else ""}
+        </div>
         <div id="page-header">
             {"<img src='" + header_img_url + "' alt='Header'>" if header_img_url else ""}
         </div>
-
-        <!-- ============================================
-             MAIN CONTENT
-             ============================================ -->
         <div class="invoice-title">{header_title}</div>
-
         <div class="invoice-meta">
             <div class="invoice-meta-row">Invoice Number: {inv}</div>
             <br>
@@ -1157,7 +1168,6 @@ class InvoiceAdmin(admin.ModelAdmin):
             <br>
             <div class="invoice-meta-row">PO Number : {getattr(inv.project, 'po_number', 'N/A')}</div>
         </div>
-
         <div class="parties-row">
             <div class="party-block">
                 <div class="party-name">{company.company_name if company else ''}</div>
@@ -1166,13 +1176,9 @@ class InvoiceAdmin(admin.ModelAdmin):
                 <div class="party-name">{inv.project.client.name}</div>
                 <div class="party-detail"><strong>TRN:</strong> {inv.project.client.vat_number or 'N/A'}</div>
             </div>
-
         </div>
-
         <div class="project-name"><strong>Project:</strong> {inv.project.project_name}</div>
-
         <div class="section-title">PROGRESS PAYMENT</div>
-
         <table class="boq-table">
             <thead>
                 <tr>
@@ -1197,7 +1203,6 @@ class InvoiceAdmin(admin.ModelAdmin):
             <tbody>{rows}</tbody>
             <tfoot>{footer_rows}</tfoot>
         </table>
-
         <div class="summary-wrapper">
             <div class="summary-box bank">
                 <div class="summary-box-title">Bank Account Details:</div>
@@ -1205,7 +1210,6 @@ class InvoiceAdmin(admin.ModelAdmin):
                     {company.bank if company and company.bank else ''}
                 </div>
             </div>
-
             <div class="summary-box totals">
                 <div class="summary-row"><span>Total Invoiced (Cumulative):</span><span>{inv.net_total_invoiced_cumulative:,.2f}</span></div>
                 <div class="summary-row"><span>Previously Invoiced:</span><span>({inv.previous_net_total_invoiced:,.2f})</span></div>
@@ -1216,15 +1220,531 @@ class InvoiceAdmin(admin.ModelAdmin):
                 <div class="summary-row border-top red-text"><span>Payable Amount:</span><span>{inv.total_after_vat:,.2f}</span></div>
             </div>
         </div>
-
-        <!-- ============================================
-             RUNNING PAGE FOOTER - Appears on EVERY page
-             ============================================ -->
         <div id="page-footer">
             {"<img src='" + footer_img_url + "' alt='Footer'>" if footer_img_url else ""}
         </div>
-
         <script>window.onload = function() {{ window.print(); }}</script>
     </body>
     </html>"""
         return HttpResponse(html)
+
+
+# =============================================================================
+# EXPENSE ADMIN
+# =============================================================================
+
+class SubExpenseInline(admin.TabularInline):
+    model = SubExpense
+    extra = 1
+
+
+@admin.register(ExpenseCategory)
+class ExpenseCategoryAdmin(admin.ModelAdmin):
+    list_display = ["name", "sub_expense_count"]
+    inlines = [SubExpenseInline]
+    search_fields = ["name"]
+
+    def sub_expense_count(self, obj):
+        return obj.sub_expenses.count()
+    sub_expense_count.short_description = "Sub-Expenses"
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path('subexpense/get-by-category/', self.admin_site.admin_view(self.get_subexpenses), name='subexpense_get_by_category'),
+        ]
+        return custom + urls
+
+    def get_subexpenses(self, request):
+        from django.http import JsonResponse
+        category_id = request.GET.get('category_id')
+        if not category_id:
+            return JsonResponse([], safe=False)
+        items = SubExpense.objects.filter(parent_id=category_id).values('id', 'name')
+        data = [{'id': item['id'], 'text': item['name']} for item in items]
+        return JsonResponse(data, safe=False)
+
+@admin.register(Expense)
+class ExpenseAdmin(admin.ModelAdmin):
+    list_display = ["date", "project", "category", "sub_category", "fmt_amount", "boq_item", "is_allocated"]
+    list_filter = ["project", "category", "date", "is_allocated"]
+    search_fields = ["description", "reference_number"]
+    autocomplete_fields = ["project"]
+
+    class Media:
+        js = ('admin/js/vendor/jquery/jquery.min.js', 'admin/js/jquery.init.js', 'admin/js/expense_boq_filter.js')
+
+    def fmt_amount(self, obj):
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.amount:,.2f}</div>')
+
+    fmt_amount.short_description = "Amount"
+
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+
+        # Filter sub_category by selected category (on both add and change)
+        if obj and obj.category:
+            form.base_fields['sub_category'].queryset = SubExpense.objects.filter(parent=obj.category)
+        else:
+            form.base_fields['sub_category'].queryset = SubExpense.objects.none()
+
+        # Filter boq_item by selected project (on both add and change)
+        if obj and obj.project:
+            form.base_fields['boq_item'].queryset = BOQItem.objects.filter(project=obj.project)
+        else:
+            form.base_fields['boq_item'].queryset = BOQItem.objects.none()
+
+        return form
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        # This runs AFTER the form is instantiated, so we use it for change form
+        if db_field.name == "boq_item":
+            if request.resolver_match and request.resolver_match.kwargs.get('object_id'):
+                obj = self.get_object(request, request.resolver_match.kwargs['object_id'])
+                if obj and obj.project:
+                    kwargs["queryset"] = BOQItem.objects.filter(project=obj.project)
+                else:
+                    kwargs["queryset"] = BOQItem.objects.none()
+            else:
+                kwargs["queryset"] = BOQItem.objects.none()
+
+        elif db_field.name == "sub_category":
+            if request.resolver_match and request.resolver_match.kwargs.get('object_id'):
+                obj = self.get_object(request, request.resolver_match.kwargs['object_id'])
+                if obj and obj.category:
+                    kwargs["queryset"] = SubExpense.objects.filter(parent=obj.category)
+                else:
+                    kwargs["queryset"] = SubExpense.objects.none()
+            else:
+                kwargs["queryset"] = SubExpense.objects.none()
+
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
+# =============================================================================
+# EMPLOYEE & PAYROLL ADMIN
+# =============================================================================
+
+@admin.register(Employee)
+class EmployeeAdmin(admin.ModelAdmin):
+    list_display = [
+        "employee_id", "name", "employee_type", "payment_type",
+        "cost_center", "fmt_total_salary", "fmt_daily_cost", "is_active"
+    ]
+    list_filter = ["employee_type", "payment_type", "is_head_office", "is_active", "project"]
+    search_fields = ["name", "employee_id"]
+    fieldsets = (
+        ("Employee Information", {
+            "fields": (
+                ("employee_id", "name"),
+                ("employee_type", "payment_type"),
+                ("project", "is_head_office"),
+                ("is_active", "date_joined"),
+            )
+        }),
+        ("Salary Components", {
+            "fields": (
+                ("basic_salary", "housing_allowance"),
+                ("transport_allowance", "other_allowances"),
+            )
+        }),
+        ("Annual Administrative Costs", {
+            "fields": (
+                ("annual_benefits", "annual_eid_cost"),
+                ("annual_visa_cost", "annual_ticket_cost"),
+            ),
+            "description": "These are summed and divided by 12 to produce the monthly admin cost."
+        }),
+    )
+
+    def cost_center(self, obj):
+        if obj.is_head_office:
+            return mark_safe('<b style="color:#000080;">HEAD OFFICE</b>')
+        return obj.project.project_id_code if obj.project else mark_safe('<span style="color:#999;">—</span>')
+    cost_center.short_description = "Cost Center"
+
+    def fmt_total_salary(self, obj):
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.total_salary:,.2f}</div>')
+    fmt_total_salary.short_description = "Total Salary"
+
+    def fmt_daily_cost(self, obj):
+        return mark_safe(f'<div style="text-align:right;color:#2e7d32;font-weight:bold;">{obj.daily_cost:,.2f}</div>')
+    fmt_daily_cost.short_description = "Daily Cost"
+
+
+class PayrollAllocationInline(admin.TabularInline):
+    model = PayrollAllocation
+    extra = 0
+    readonly_fields = [
+        "project", "boq_item", "salary_allocated", "admin_cost_allocated",
+        "total_allocated", "project_work_done_pct", "boq_item_work_done_pct", "created_at"
+    ]
+    can_delete = False
+
+
+@admin.register(PayrollRecord)
+class PayrollRecordAdmin(admin.ModelAdmin):
+    inlines = [PayrollAllocationInline]
+    list_display = [
+        "employee", "month", "fmt_total_salary", "fmt_overtime", "fmt_absence",
+        "fmt_advance", "fmt_other_ded", "fmt_net_salary", "allocation_status"
+    ]
+    list_filter = ["month", "is_allocated", "employee__employee_type", "employee__payment_type"]
+    search_fields = ["employee__name", "employee__employee_id"]
+    actions = ["allocate_selected"]
+    date_hierarchy = "month"
+
+    def fmt_total_salary(self, obj):
+        return mark_safe(f'<div style="text-align:right;">{obj.total_salary_snap:,.2f}</div>')
+    fmt_total_salary.short_description = "Total Salary"
+
+    def fmt_overtime(self, obj):
+        if obj.employee.employee_type == 'Site':
+            return mark_safe(f'<div style="text-align:right;">{obj.overtime_hours}h / {obj.overtime_amount_snap:,.2f}</div>')
+        return mark_safe('<span style="color:#999;">—</span>')
+    fmt_overtime.short_description = "OT (Hrs/Amt)"
+
+    def fmt_absence(self, obj):
+        return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.absence_deduction_snap:,.2f})</div>')
+    fmt_absence.short_description = "Absence"
+
+    def fmt_advance(self, obj):
+        return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.salary_advance:,.2f})</div>')
+    fmt_advance.short_description = "Advance"
+
+    def fmt_other_ded(self, obj):
+        return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.other_deduction:,.2f})</div>')
+    fmt_other_ded.short_description = "Other Ded."
+
+    def fmt_net_salary(self, obj):
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.net_salary_snap:,.2f}</div>')
+    fmt_net_salary.short_description = "Net Salary"
+
+    def allocation_status(self, obj):
+        if obj.is_allocated:
+            return mark_safe('<b style="color:#2e7d32;">ALLOCATED</b>')
+        return mark_safe('<b style="color:#d32f2f;">PENDING</b>')
+    allocation_status.short_description = "Status"
+
+    @admin.action(description="Allocate selected payroll to projects / BOQ items")
+    def allocate_selected(self, request, queryset):
+        from .models import allocate_payroll
+        done = 0
+        skipped = 0
+        for rec in queryset:
+            if rec.is_allocated:
+                skipped += 1
+                continue
+            if allocate_payroll(rec):
+                done += 1
+            else:
+                skipped += 1
+        self.message_user(request, f"Allocated: {done} | Skipped/Failed: {skipped}")
+
+    def changelist_view(self, request, extra_context=None):
+        today = date.today()
+        first_day = today.replace(day=1)
+        last_month = (first_day - timedelta(days=1)).replace(day=1)
+
+        unallocated = PayrollRecord.objects.filter(month=last_month, is_allocated=False).count()
+        if unallocated > 0:
+            messages.warning(
+                request,
+                mark_safe(
+                    f"<b>PAYROLL ALERT:</b> {unallocated} record(s) for <b>{last_month.strftime('%b %Y')}</b> "
+                    f"are not yet allocated to projects. "
+                    f"<a href='allocate/' style='color:#d32f2f; text-decoration:underline; font-weight:bold;'>Allocate Now →</a>"
+                )
+            )
+        return super().changelist_view(request, extra_context)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path("allocate/", self.admin_site.admin_view(self.allocate_view), name="payroll_allocate"),
+            path("reports/staff/", self.admin_site.admin_view(self.staff_report), name="payroll_staff_report"),
+            path("reports/wps/", self.admin_site.admin_view(self.wps_report), name="payroll_wps_report"),
+            path("reports/cash/", self.admin_site.admin_view(self.cash_report), name="payroll_cash_report"),
+        ]
+        return custom + urls
+
+    def allocate_view(self, request):
+        today = date.today()
+        first_day = today.replace(day=1)
+        last_month = (first_day - timedelta(days=1)).replace(day=1)
+
+        unallocated = PayrollRecord.objects.filter(
+            month=last_month, is_allocated=False
+        ).select_related("employee")
+
+        if request.method == "POST":
+            action = request.POST.get("action")
+            if action == "yes":
+                from .models import allocate_payroll
+                done = 0
+                for rec in unallocated:
+                    if allocate_payroll(rec):
+                        done += 1
+                messages.success(request, f"{done} payroll record(s) allocated successfully.")
+                return redirect("..")
+            else:
+                messages.info(request, "Allocation postponed. You will be reminded again.")
+                return redirect("..")
+
+        rows = ""
+        total_net = Decimal("0")
+        for rec in unallocated:
+            total_net += rec.net_salary_snap
+            rows += f"""<tr>
+                <td>{rec.employee.employee_id}</td>
+                <td>{rec.employee.name}</td>
+                <td>{rec.employee.get_employee_type_display()}</td>
+                <td>{rec.employee.get_payment_type_display()}</td>
+                <td class='num'>{rec.net_salary_snap:,.2f}</td>
+            </tr>"""
+
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 12px; padding: 40px; background: #f5f5f5; }}
+    .box {{ max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+    h2 {{ color: #000080; margin-bottom: 10px; }}
+    .subtitle {{ color: #666; margin-bottom: 25px; }}
+    table {{ width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 11px; }}
+    th {{ background: #e8e8e8; border: 1px solid #999; padding: 8px; text-align: left; }}
+    td {{ border: 1px solid #ccc; padding: 8px; }}
+    .num {{ text-align: right; }}
+    .actions {{ margin-top: 25px; display: flex; gap: 15px; }}
+    .btn {{ padding: 12px 30px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: bold; }}
+    .btn-yes {{ background: #2e7d32; color: white; }}
+    .btn-no {{ background: #ed6c02; color: white; }}
+    .total-row td {{ font-weight: bold; background: #e3f2fd; border-top: 2px solid #333; }}
+</style></head><body>
+    <div class="box">
+        <h2>Monthly Payroll Allocation</h2>
+        <div class="subtitle">Month: {last_month.strftime('%B %Y')} | Unallocated Records: {unallocated.count()}</div>
+        <table>
+            <thead>
+                <tr><th>Emp ID</th><th>Name</th><th>Type</th><th>Payment</th><th class='num'>Net Salary</th></tr>
+            </thead>
+            <tbody>{rows}</tbody>
+            <tfoot>
+                <tr class="total-row">
+                    <td colspan="4"><b>TOTAL NET TO ALLOCATE</b></td>
+                    <td class='num'><b>{total_net:,.2f}</b></td>
+                </tr>
+            </tfoot>
+        </table>
+        <div style="background:#fff3cd; padding:12px; border-radius:6px; margin-bottom:20px; border-left:4px solid #ed6c02;">
+            <b>Head Office employees</b> will be distributed across projects based on monthly work-done percentages.<br>
+            <b>Project employees</b> will be allocated directly to their project's BOQ items.
+        </div>
+        <form method="post">
+            <div class="actions">
+                <button type="submit" name="action" value="yes" class="btn btn-yes">YES — Allocate Now</button>
+                <button type="submit" name="action" value="no" class="btn btn-no">NO — Remind Me Tomorrow</button>
+            </div>
+        </form>
+    </div>
+</body></html>"""
+        return HttpResponse(html)
+
+    def staff_report(self, request):
+        month = request.GET.get("month")
+        qs = PayrollRecord.objects.filter(
+            employee__employee_type="Staff",
+            employee__payment_type="Bank"
+        ).select_related("employee").order_by("-month")
+        if month:
+            qs = qs.filter(month=month)
+
+        rows = ""
+        totals = {"basic": Decimal("0"), "housing": Decimal("0"), "transport": Decimal("0"),
+                  "other": Decimal("0"), "total": Decimal("0"), "absence": Decimal("0"),
+                  "advance": Decimal("0"), "other_ded": Decimal("0"), "net": Decimal("0")}
+
+        for rec in qs:
+            rows += f"""<tr>
+                <td>{rec.employee.employee_id}</td>
+                <td>{rec.employee.name}</td>
+                <td class='num'>{rec.basic_salary_snap:,.2f}</td>
+                <td class='num'>{rec.housing_allowance_snap:,.2f}</td>
+                <td class='num'>{rec.transport_allowance_snap:,.2f}</td>
+                <td class='num'>{rec.other_allowances_snap:,.2f}</td>
+                <td class='num'><b>{rec.total_salary_snap:,.2f}</b></td>
+                <td class='num'>({rec.absence_deduction_snap:,.2f})</td>
+                <td class='num'>({rec.salary_advance:,.2f})</td>
+                <td class='num'>({rec.other_deduction:,.2f})</td>
+                <td class='num'><b>{rec.net_salary_snap:,.2f}</b></td>
+            </tr>"""
+            totals["basic"] += rec.basic_salary_snap
+            totals["housing"] += rec.housing_allowance_snap
+            totals["transport"] += rec.transport_allowance_snap
+            totals["other"] += rec.other_allowances_snap
+            totals["total"] += rec.total_salary_snap
+            totals["absence"] += rec.absence_deduction_snap
+            totals["advance"] += rec.salary_advance
+            totals["other_ded"] += rec.other_deduction
+            totals["net"] += rec.net_salary_snap
+
+        html = self._payroll_report_wrapper(
+            "OFFICE STAFF PAYROLL REPORT",
+            ["Emp ID", "Name", "Basic", "Housing", "Transport", "Other", "Total", "Absence", "Advance", "Other Ded.", "Net"],
+            rows, totals, "Bank Transfer"
+        )
+        return HttpResponse(html)
+
+    def wps_report(self, request):
+        month = request.GET.get("month")
+        qs = PayrollRecord.objects.filter(
+            employee__employee_type="Site",
+            employee__payment_type="WPS"
+        ).select_related("employee").order_by("-month")
+        if month:
+            qs = qs.filter(month=month)
+
+        rows = ""
+        totals = {"total": Decimal("0"), "ot": Decimal("0"), "absence": Decimal("0"),
+                  "advance": Decimal("0"), "other_ded": Decimal("0"), "net": Decimal("0")}
+
+        for rec in qs:
+            rows += f"""<tr>
+                <td>{rec.employee.employee_id}</td>
+                <td>{rec.employee.name}</td>
+                <td class='num'>{rec.total_salary_snap:,.2f}</td>
+                <td class='num'>{rec.overtime_hours}h</td>
+                <td class='num'>{rec.overtime_amount_snap:,.2f}</td>
+                <td class='num'>({rec.absence_deduction_snap:,.2f})</td>
+                <td class='num'>({rec.salary_advance:,.2f})</td>
+                <td class='num'>({rec.other_deduction:,.2f})</td>
+                <td class='num'><b>{rec.net_salary_snap:,.2f}</b></td>
+            </tr>"""
+            totals["total"] += rec.total_salary_snap
+            totals["ot"] += rec.overtime_amount_snap
+            totals["absence"] += rec.absence_deduction_snap
+            totals["advance"] += rec.salary_advance
+            totals["other_ded"] += rec.other_deduction
+            totals["net"] += rec.net_salary_snap
+
+        html = self._payroll_report_wrapper(
+            "SITE WORKERS PAYROLL REPORT (WPS)",
+            ["Emp ID", "Name", "Total Salary", "OT Hrs", "OT Amt", "Absence", "Advance", "Other Ded.", "Net"],
+            rows, totals, "WPS Agency"
+        )
+        return HttpResponse(html)
+
+    def cash_report(self, request):
+        month = request.GET.get("month")
+        qs = PayrollRecord.objects.filter(
+            employee__payment_type="Cash"
+        ).select_related("employee").order_by("-month")
+        if month:
+            qs = qs.filter(month=month)
+
+        rows = ""
+        total_net = Decimal("0")
+        for rec in qs:
+            total_net += rec.net_salary_snap
+            rows += f"""<tr>
+                <td>{rec.employee.employee_id}</td>
+                <td>{rec.employee.name}</td>
+                <td>{rec.employee.get_employee_type_display()}</td>
+                <td class='num'>{rec.net_salary_snap:,.2f}</td>
+                <td style='width:120px; border-bottom:1px solid #333;'></td>
+            </tr>"""
+
+        html = self._payroll_report_wrapper(
+            "CASH PAYROLL REPORT",
+            ["Emp ID", "Name", "Type", "Net Amount", "Signature"],
+            rows, {"net": total_net}, "Cash"
+        )
+        return HttpResponse(html)
+
+    def _payroll_report_wrapper(self, title, headers, rows, totals, payment_method):
+        header_cells = "".join(f"<th>{h}</th>" for h in headers)
+        total_row = ""
+        if "basic" in totals:
+            total_row = f"""<tr class='total-row'>
+                <td colspan='2'><b>TOTAL</b></td>
+                <td class='num'>{totals['basic']:,.2f}</td>
+                <td class='num'>{totals['housing']:,.2f}</td>
+                <td class='num'>{totals['transport']:,.2f}</td>
+                <td class='num'>{totals['other']:,.2f}</td>
+                <td class='num'><b>{totals['total']:,.2f}</b></td>
+                <td class='num'>({totals['absence']:,.2f})</td>
+                <td class='num'>({totals['advance']:,.2f})</td>
+                <td class='num'>({totals['other_ded']:,.2f})</td>
+                <td class='num'><b>{totals['net']:,.2f}</b></td>
+            </tr>"""
+        elif "ot" in totals:
+            total_row = f"""<tr class='total-row'>
+                <td colspan='2'><b>TOTAL</b></td>
+                <td class='num'>{totals['total']:,.2f}</td>
+                <td></td>
+                <td class='num'>{totals['ot']:,.2f}</td>
+                <td class='num'>({totals['absence']:,.2f})</td>
+                <td class='num'>({totals['advance']:,.2f})</td>
+                <td class='num'>({totals['other_ded']:,.2f})</td>
+                <td class='num'><b>{totals['net']:,.2f}</b></td>
+            </tr>"""
+        else:
+            total_row = f"""<tr class='total-row'>
+                <td colspan='3'><b>TOTAL</b></td>
+                <td class='num'><b>{totals['net']:,.2f}</b></td>
+                <td></td>
+            </tr>"""
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; padding: 20px; }}
+    .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
+    .report-sub {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
+    .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 20px; line-height: 1.6; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 9px; margin-top: 6px; }}
+    th {{ background: #e8e8e8; border: 1px solid #999; padding: 6px; text-align: left; font-weight: bold; }}
+    td {{ border: 1px solid #ccc; padding: 5px; }}
+    .num {{ text-align: right; white-space: nowrap; }}
+    tr:nth-child(even) {{ background: #fafafa; }}
+    .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; }}
+</style></head><body>
+    <div class="report-title">{title}</div>
+    <div class="report-sub">Payment Method: {payment_method} | Generated: {date.today().strftime('%d-%b-%Y')}</div>
+    <div class="meta-box">
+        <b>Report Type:</b> {title}<br>
+        <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
+    </div>
+    <table>
+        <thead><tr>{header_cells}</tr></thead>
+        <tbody>{rows}</tbody>
+        <tfoot>{total_row}</tfoot>
+    </table>
+    <script>window.onload = function() {{ window.print(); }}</script>
+</body></html>"""
+
+
+# =============================================================================
+# PRICING ADMIN
+# =============================================================================
+
+class PricingBOQItemInline(admin.TabularInline):
+    model = PricingBOQItem
+    extra = 1
+    fields = [
+        "item_number", "description", "unit", "estimated_quantity",
+        "reference_boq_item", "historical_rate", "historical_cost", "proposed_rate", "proposed_total"
+    ]
+    readonly_fields = ["historical_rate", "historical_cost", "proposed_total"]
+
+
+@admin.register(PricingProject)
+class PricingProjectAdmin(admin.ModelAdmin):
+    inlines = [PricingBOQItemInline]
+    list_display = ["project_name", "client", "created_date", "fmt_total"]
+    search_fields = ["project_name", "client__name"]
+    filter_horizontal = ["reference_projects"]
+
+    def fmt_total(self, obj):
+        total = sum(item.proposed_total for item in obj.boq_items.all())
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{total:,.2f}</div>')
+    fmt_total.short_description = "Proposed Total"
