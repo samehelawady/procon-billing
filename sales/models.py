@@ -656,6 +656,19 @@ class PayrollRecord(models.Model):
         deductions = self.absence_deduction + self.salary_advance + self.other_deduction
         return money(gross - deductions)
 
+    # ---------------------------------------------------------------------
+    # NEW: Snap-based daily rates (30-day month) used for project costing
+    # ---------------------------------------------------------------------
+    @property
+    def daily_rate(self):
+        """Daily rate based on 30-day month (total salary + overtime)."""
+        return money((self.total_salary_snap + self.overtime_amount_snap) / Decimal("30"))
+
+    @property
+    def daily_cost(self):
+        """Daily cost based on 30-day month (salary + overtime + admin)."""
+        return money((self.total_salary_snap + self.overtime_amount_snap + self.employee.monthly_admin_cost) / Decimal("30"))
+
     def save(self, *args, **kwargs):
         self.basic_salary_snap = self.employee.basic_salary
         self.housing_allowance_snap = self.employee.housing_allowance
@@ -706,25 +719,23 @@ class PayrollCostCenter(models.Model):
             return delta.days + 1
         return 0
 
+    # ---------------------------------------------------------------------
+    # UPDATED: Use 30-day month daily rate from the payroll record snaps
+    # ---------------------------------------------------------------------
     @property
     def prorated_salary(self):
-        """Calculate prorated salary for this period."""
+        """Calculate prorated salary for this period using 30-day month policy."""
         if not self.payroll_record or not self.days_count:
             return Decimal("0")
+        return money(self.payroll_record.daily_rate * Decimal(self.days_count))
 
-        monthly_net = self.payroll_record.net_salary_snap
-        month = self.payroll_record.month
-
-        if month.month == 12:
-            next_month = date(month.year + 1, 1, 1)
-        else:
-            next_month = date(month.year, month.month + 1, 1)
-        days_in_month = (next_month - month).days
-
-        if days_in_month > 0:
-            daily_rate = monthly_net / Decimal(days_in_month)
-            return money(daily_rate * Decimal(self.days_count))
-        return Decimal("0")
+    @property
+    def prorated_admin_cost(self):
+        """Calculate prorated admin cost for this period using 30-day month policy."""
+        if not self.payroll_record or not self.days_count:
+            return Decimal("0")
+        daily_admin = self.payroll_record.employee.monthly_admin_cost / Decimal("30")
+        return money(daily_admin * Decimal(self.days_count))
 
     def clean(self):
         if self.from_date and self.to_date and self.from_date > self.to_date:
@@ -832,16 +843,93 @@ def allocate_payroll(payroll_record):
     last_day = calendar.monthrange(month_start.year, month_start.month)[1]
     month_end = month_start.replace(day=last_day)
 
-    month_invoices = Invoice.objects.filter(
-        date__gte=month_start,
-        date__lte=month_end,
-        is_advance_invoice=False
-    ).select_related('project')
+    # Clear any existing allocations for this record first
+    PayrollAllocation.objects.filter(payroll_record=payroll_record).delete()
 
-    if employee.is_head_office:
+    cost_centers = payroll_record.cost_centers.all()
+    total_salary = payroll_record.net_salary_snap
+    total_admin = employee.monthly_admin_cost
+
+    def _distribute(project, salary_amt, admin_amt):
+        boq_items = BOQItem.objects.filter(project=project)
+        total_boq_value = sum(boq.quantity * boq.rate for boq in boq_items)
+        count = boq_items.count() or 1
+
+        if total_boq_value == 0 or boq_items.count() == 0:
+            per_item_sal = money(salary_amt / count)
+            per_item_adm = money(admin_amt / count)
+            for boq in boq_items:
+                PayrollAllocation.objects.create(
+                    payroll_record=payroll_record,
+                    project=project,
+                    boq_item=boq,
+                    salary_allocated=per_item_sal,
+                    admin_cost_allocated=per_item_adm,
+                    project_work_done_pct=Decimal("100"),
+                    boq_item_work_done_pct=money(Decimal("100") / count)
+                )
+            return
+
+        for boq in boq_items:
+            boq_value = boq.quantity * boq.rate
+            boq_pct = money(boq_value / total_boq_value)
+            item_sal = money(salary_amt * boq_pct)
+            item_adm = money(admin_amt * boq_pct)
+            PayrollAllocation.objects.create(
+                payroll_record=payroll_record,
+                project=project,
+                boq_item=boq,
+                salary_allocated=item_sal,
+                admin_cost_allocated=item_adm,
+                project_work_done_pct=Decimal("100"),
+                boq_item_work_done_pct=boq_pct * 100
+            )
+
+    if cost_centers.exists():
+        assigned_days = sum(cc.days_count for cc in cost_centers)
+        for cc in cost_centers:
+            _distribute(cc.project, cc.prorated_salary, cc.prorated_admin_cost)
+
+        remaining_days = (month_end - month_start).days + 1 - assigned_days
+        if remaining_days > 0:
+            rem_sal = money(total_salary * Decimal(remaining_days) / Decimal("30"))
+            rem_adm = money(total_admin * Decimal(remaining_days) / Decimal("30"))
+
+            if employee.is_head_office:
+                month_invoices = Invoice.objects.filter(
+                    date__gte=month_start,
+                    date__lte=month_end,
+                    is_advance_invoice=False
+                ).select_related('project')
+
+                project_work = {}
+                total_work = Decimal("0")
+                for inv in month_invoices:
+                    work = inv.current_gross_total
+                    if work > 0:
+                        pid = inv.project_id
+                        project_work[pid] = project_work.get(pid, Decimal("0")) + work
+                        total_work += work
+
+                if total_work > 0:
+                    for pid, work in project_work.items():
+                        project = Project.objects.get(pk=pid)
+                        pct = money(work / total_work)
+                        _distribute(project, money(rem_sal * pct), money(rem_adm * pct))
+                elif employee.project:
+                    _distribute(employee.project, rem_sal, rem_adm)
+            elif employee.project:
+                _distribute(employee.project, rem_sal, rem_adm)
+
+    elif employee.is_head_office:
+        month_invoices = Invoice.objects.filter(
+            date__gte=month_start,
+            date__lte=month_end,
+            is_advance_invoice=False
+        ).select_related('project')
+
         project_work = {}
         total_work = Decimal("0")
-
         for inv in month_invoices:
             work = inv.current_gross_total
             if work > 0:
@@ -852,15 +940,12 @@ def allocate_payroll(payroll_record):
         if total_work == 0:
             return False
 
-        salary = payroll_record.net_salary_snap
-        admin = employee.monthly_admin_cost
-
         for pid, work in project_work.items():
             project = Project.objects.get(pk=pid)
             pct = money(work / total_work)
-            proj_salary = money(salary * pct)
-            proj_admin = money(admin * pct)
-            _allocate_to_boq_items(payroll_record, project, proj_salary, proj_admin)
+            proj_salary = money(total_salary * pct)
+            proj_admin = money(total_admin * pct)
+            _distribute(project, proj_salary, proj_admin)
 
         payroll_record.is_allocated = True
         payroll_record.allocated_at = timezone.now()
@@ -868,9 +953,7 @@ def allocate_payroll(payroll_record):
         return True
 
     elif employee.project:
-        salary = payroll_record.net_salary_snap
-        admin = employee.monthly_admin_cost
-        _allocate_to_boq_items(payroll_record, employee.project, salary, admin)
+        _distribute(employee.project, total_salary, total_admin)
 
         payroll_record.is_allocated = True
         payroll_record.allocated_at = timezone.now()

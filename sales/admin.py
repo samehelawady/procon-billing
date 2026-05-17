@@ -6,15 +6,17 @@ from .models import (
     Client, Project, BOQItem, Invoice, InvoiceItem, CompanyProfile, money,
     ExpenseCategory, SubExpense, Expense,
     Employee, EmployeeTransfer, PayrollRecord, PayrollCostCenter, PayrollAllocation,
-    PricingProject, PricingBOQItem
+    PricingProject, PricingBOQItem,
+    allocate_payroll
 )
 from django.urls import reverse
 from decimal import Decimal
-from django.db.models import Sum
+from django.db.models import Sum, Count
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.urls import path
 from datetime import date, timedelta
+import calendar
 from django.contrib import messages
 from django.shortcuts import redirect
 from django import forms
@@ -447,9 +449,86 @@ class ProjectAdmin(admin.ModelAdmin):
 
         rows = ""
         grand_revenue = Decimal("0")
+        grand_direct_expenses = Decimal("0")
+        grand_manpower = Decimal("0")
         grand_expenses = Decimal("0")
         grand_profit = Decimal("0")
 
+        # =================================================================
+        # 1. CALCULATE TOTAL MANPOWER COST FOR THE PROJECT
+        # =================================================================
+        total_manpower = Decimal("0")
+
+        # Employees with explicit cost-center assignments to this project
+        for cc in PayrollCostCenter.objects.filter(
+            project=proj
+        ).select_related('payroll_record__employee'):
+            emp = cc.payroll_record.employee
+            days = cc.days_count
+            pr = cc.payroll_record
+            days_in_month = calendar.monthrange(pr.month.year, pr.month.month)[1]
+
+            # Payroll portion: (salary + overtime) prorated by actual days in month
+            payroll_portion = money(
+                (pr.total_salary_snap + pr.overtime_amount_snap) *
+                Decimal(days) / Decimal(days_in_month)
+            )
+
+            # Admin portion: annual admin costs / 312 working days * days worked
+            annual_admin = (
+                emp.annual_benefits + emp.annual_eid_cost +
+                emp.annual_visa_cost + emp.annual_ticket_cost
+            )
+            admin_portion = money(annual_admin / Decimal("312") * Decimal(days))
+
+            total_manpower += payroll_portion + admin_portion
+
+        # Permanent employees assigned to this project with no cost-center splits
+        for emp in Employee.objects.filter(project=proj, is_active=True):
+            for pr in PayrollRecord.objects.filter(employee=emp):
+                if not pr.cost_centers.filter(project=proj).exists():
+                    days_in_month = calendar.monthrange(pr.month.year, pr.month.month)[1]
+                    days_worked = days_in_month - pr.days_absent
+                    if days_worked > 0:
+                        payroll_portion = money(
+                            (pr.total_salary_snap + pr.overtime_amount_snap) *
+                            Decimal(days_worked) / Decimal(days_in_month)
+                        )
+                        annual_admin = (
+                            emp.annual_benefits + emp.annual_eid_cost +
+                            emp.annual_visa_cost + emp.annual_ticket_cost
+                        )
+                        admin_portion = money(
+                            annual_admin / Decimal("312") * Decimal(days_worked)
+                        )
+                        total_manpower += payroll_portion + admin_portion
+
+        # =================================================================
+        # 2. ALLOCATE TOTAL MANPOWER TO BOQ ITEMS BY PROGRESS PERCENTAGE
+        # =================================================================
+        boq_manpower = {}
+        total_work = latest_inv.cumulative_work_done if latest_inv else Decimal("0")
+        total_boq_value = sum(b.quantity * b.rate for b in boq_items)
+
+        for boq in boq_items:
+            cum_amt = InvoiceItem.objects.filter(
+                boq_item=boq,
+                invoice__project=proj,
+                invoice__is_advance_invoice=False
+            ).aggregate(total=Sum('gross_amount'))['total'] or Decimal("0")
+
+            if total_work > 0:
+                pct = cum_amt / total_work
+            elif total_boq_value > 0:
+                pct = (boq.quantity * boq.rate) / total_boq_value
+            else:
+                pct = Decimal("0")
+
+            boq_manpower[boq.id] = money(total_manpower * pct)
+
+        # =================================================================
+        # 3. BUILD REPORT ROWS
+        # =================================================================
         for boq in boq_items:
             inv_items = InvoiceItem.objects.filter(
                 boq_item=boq,
@@ -465,9 +544,7 @@ class ProjectAdmin(admin.ModelAdmin):
                 boq_item=boq, project=proj
             ).aggregate(total=Sum('amount'))['total'] or Decimal("0")
 
-            payroll_allocations = PayrollAllocation.objects.filter(
-                boq_item=boq, project=proj
-            ).aggregate(total=Sum('total_allocated'))['total'] or Decimal("0")
+            payroll_allocations = boq_manpower.get(boq.id, Decimal("0"))
 
             total_expenses = money(direct_expenses + payroll_allocations)
             profit_loss = money(revenue - total_expenses)
@@ -477,6 +554,8 @@ class ProjectAdmin(admin.ModelAdmin):
             profit_icon = "+" if profit_loss >= 0 else "-"
 
             grand_revenue += revenue
+            grand_direct_expenses += direct_expenses
+            grand_manpower += payroll_allocations
             grand_expenses += total_expenses
             grand_profit += profit_loss
 
@@ -499,7 +578,6 @@ class ProjectAdmin(admin.ModelAdmin):
                     <td class='col-num' style='color:{profit_color};'>{profit_pct:.1f}%</td>
                 </tr>
                 """
-
         grand_profit_pct = (grand_profit / grand_revenue * 100) if grand_revenue > 0 else Decimal("0")
         grand_color = "#2e7d32" if grand_profit >= 0 else "#d32f2f"
 
@@ -597,8 +675,8 @@ class ProjectAdmin(admin.ModelAdmin):
                 <tr class="total-row">
                     <td colspan="7"><b>GRAND TOTALS</b></td>
                     <td class='col-num'><b>{grand_revenue:,.2f}</b></td>
-                    <td class='col-num'></td>
-                    <td class='col-num'></td>
+                    <td class='col-num' style='color:#ed6c02;'><b>{grand_direct_expenses:,.2f}</b></td>
+                    <td class='col-num' style='color:#ed6c02;'><b>{grand_manpower:,.2f}</b></td>
                     <td class='col-num'><b>{grand_expenses:,.2f}</b></td>
                     <td class='col-num' style='color:{grand_color}; font-size:11px;'><b>{grand_profit:,.2f}</b></td>
                     <td class='col-num' style='color:{grand_color};'><b>{grand_profit_pct:.1f}%</b></td>
@@ -1264,146 +1342,6 @@ class ExpenseAdmin(admin.ModelAdmin):
 # PAYROLL ALLOCATION LOGIC
 # =============================================================================
 
-def calculate_monthly_boq_progress(project, month):
-    from django.db.models import Sum
-    month_invoices = Invoice.objects.filter(
-        project=project,
-        date__year=month.year,
-        date__month=month.month,
-        is_advance_invoice=False
-    )
-    boq_progress = {}
-    total_monthly_work = Decimal("0")
-    for boq in project.boq_items.all():
-        inv_items = InvoiceItem.objects.filter(boq_item=boq, invoice__in=month_invoices)
-        monthly_qty = inv_items.aggregate(total=Sum('current_qty'))['total'] or Decimal("0")
-        monthly_amount = inv_items.aggregate(total=Sum('gross_amount'))['total'] or Decimal("0")
-        boq_progress[boq.id] = {
-            'boq_item': boq,
-            'monthly_qty': monthly_qty,
-            'monthly_amount': monthly_amount,
-        }
-        total_monthly_work += monthly_amount
-    for boq_id, data in boq_progress.items():
-        if total_monthly_work > 0:
-            data['progress_pct'] = (data['monthly_amount'] / total_monthly_work * 100)
-        else:
-            data['progress_pct'] = Decimal("0")
-    return boq_progress, total_monthly_work
-
-
-def allocate_payroll_with_progress(payroll_record):
-    from django.db.models import Sum
-    employee = payroll_record.employee
-    month = payroll_record.month
-    if month.month == 12:
-        next_month = date(month.year + 1, 1, 1)
-    else:
-        next_month = date(month.year, month.month + 1, 1)
-    days_in_month = (next_month - month).days
-    cost_centers = payroll_record.cost_centers.all()
-
-    if cost_centers.exists():
-        total_allocated = Decimal("0")
-        for cc in cost_centers:
-            project = cc.project
-            prorated_amount = cc.prorated_salary
-            boq_progress, total_monthly_work = calculate_monthly_boq_progress(project, month)
-            if total_monthly_work > 0:
-                for boq_id, data in boq_progress.items():
-                    allocation_amount = money(prorated_amount * data['progress_pct'] / 100)
-                    PayrollAllocation.objects.create(
-                        payroll_record=payroll_record, project=project, boq_item=data['boq_item'],
-                        salary_allocated=allocation_amount, admin_cost_allocated=Decimal("0"),
-                        total_allocated=allocation_amount, project_work_done_pct=data['progress_pct'],
-                        boq_item_work_done_pct=data['progress_pct'],
-                    )
-                    total_allocated += allocation_amount
-            else:
-                boq_items = project.boq_items.all()
-                if boq_items.exists():
-                    equal_amount = money(prorated_amount / boq_items.count())
-                    for boq in boq_items:
-                        PayrollAllocation.objects.create(
-                            payroll_record=payroll_record, project=project, boq_item=boq,
-                            salary_allocated=equal_amount, admin_cost_allocated=Decimal("0"),
-                            total_allocated=equal_amount, project_work_done_pct=Decimal("0"),
-                            boq_item_work_done_pct=Decimal("0"),
-                        )
-                        total_allocated += equal_amount
-
-        assigned_days = sum(cc.days_count for cc in cost_centers)
-        remaining_days = days_in_month - assigned_days
-        if remaining_days > 0 and employee.project:
-            remaining_ratio = Decimal(remaining_days) / Decimal(days_in_month)
-            remaining_amount = money(payroll_record.net_salary_snap * remaining_ratio)
-            boq_progress, total_monthly_work = calculate_monthly_boq_progress(employee.project, month)
-            if total_monthly_work > 0:
-                for boq_id, data in boq_progress.items():
-                    allocation_amount = money(remaining_amount * data['progress_pct'] / 100)
-                    PayrollAllocation.objects.create(
-                        payroll_record=payroll_record, project=employee.project, boq_item=data['boq_item'],
-                        salary_allocated=allocation_amount, admin_cost_allocated=Decimal("0"),
-                        total_allocated=allocation_amount, project_work_done_pct=data['progress_pct'],
-                        boq_item_work_done_pct=data['progress_pct'],
-                    )
-            else:
-                boq_items = employee.project.boq_items.all()
-                if boq_items.exists():
-                    equal_amount = money(remaining_amount / boq_items.count())
-                    for boq in boq_items:
-                        PayrollAllocation.objects.create(
-                            payroll_record=payroll_record, project=employee.project, boq_item=boq,
-                            salary_allocated=equal_amount, admin_cost_allocated=Decimal("0"),
-                            total_allocated=equal_amount, project_work_done_pct=Decimal("0"),
-                            boq_item_work_done_pct=Decimal("0"),
-                        )
-    else:
-        if employee.project:
-            project = employee.project
-            boq_progress, total_monthly_work = calculate_monthly_boq_progress(project, month)
-            if total_monthly_work > 0:
-                for boq_id, data in boq_progress.items():
-                    allocation_amount = money(payroll_record.net_salary_snap * data['progress_pct'] / 100)
-                    PayrollAllocation.objects.create(
-                        payroll_record=payroll_record, project=project, boq_item=data['boq_item'],
-                        salary_allocated=allocation_amount, admin_cost_allocated=Decimal("0"),
-                        total_allocated=allocation_amount, project_work_done_pct=data['progress_pct'],
-                        boq_item_work_done_pct=data['progress_pct'],
-                    )
-            else:
-                boq_items = project.boq_items.all()
-                if boq_items.exists():
-                    equal_amount = money(payroll_record.net_salary_snap / boq_items.count())
-                    for boq in boq_items:
-                        PayrollAllocation.objects.create(
-                            payroll_record=payroll_record, project=project, boq_item=boq,
-                            salary_allocated=equal_amount, admin_cost_allocated=Decimal("0"),
-                            total_allocated=equal_amount, project_work_done_pct=Decimal("0"),
-                            boq_item_work_done_pct=Decimal("0"),
-                        )
-        else:
-            active_projects = Project.objects.filter(
-                invoices__date__year=month.year,
-                invoices__date__month=month.month
-            ).distinct()
-            if active_projects.exists():
-                equal_amount = money(payroll_record.net_salary_snap / active_projects.count())
-                for proj in active_projects:
-                    boq_items = proj.boq_items.all()
-                    if boq_items.exists():
-                        boq_equal = money(equal_amount / boq_items.count())
-                        for boq in boq_items:
-                            PayrollAllocation.objects.create(
-                                payroll_record=payroll_record, project=proj, boq_item=boq,
-                                salary_allocated=boq_equal, admin_cost_allocated=Decimal("0"),
-                                total_allocated=boq_equal, project_work_done_pct=Decimal("0"),
-                                boq_item_work_done_pct=Decimal("0"),
-                            )
-
-    payroll_record.is_allocated = True
-    payroll_record.save()
-    return True
 
 
 class EmployeeTransferInline(admin.TabularInline):
@@ -1413,15 +1351,46 @@ class EmployeeTransferInline(admin.TabularInline):
     readonly_fields = ["days_count"]
 
 
+class EmployeeAdminForm(forms.ModelForm):
+    class Meta:
+        model = Employee
+        fields = '__all__'
+        labels = {
+            'employee_id': 'Employee ID',
+            'name': 'Name',
+            'employee_type': 'Employee Type',
+            'payment_type': 'Payment Type',
+            'project': 'Project',
+            'is_head_office': 'Is Head Office',
+            'is_active': 'Is Active',
+            'date_joined': 'Date Joined',
+            'basic_salary': 'Basic Salary',
+            'housing_allowance': 'Housing Allowance',
+            'transport_allowance': 'Transport Allowance',
+            'other_allowances': 'Other Allowances',
+            'annual_benefits': 'Annual Benefits',
+            'annual_eid_cost': 'Annual EID Cost',
+            'annual_visa_cost': 'Annual Visa Cost',
+            'annual_ticket_cost': 'Annual Ticket Cost',
+            'total_salary': 'Total Salary',
+            'monthly_admin_cost': 'Monthly Admin Cost',
+            'daily_cost': 'Daily Cost',
+            'hourly_rate_ot': 'Hourly Rate OT',
+        }
+
+
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
+    form = EmployeeAdminForm
     list_display = [
         "employee_id", "name", "employee_type", "payment_type",
-        "cost_center", "fmt_total_salary", "fmt_daily_cost", "is_active", "transfer_status"
+        "cost_center", "fmt_total_salary", "fmt_total_package",
+        "fmt_daily_cost", "fmt_hourly_rate", "is_active", "transfer_status"
     ]
     list_filter = ["employee_type", "payment_type", "is_head_office", "is_active", "project"]
     search_fields = ["name", "employee_id"]
     inlines = [EmployeeTransferInline]
+    readonly_fields = ["total_salary", "monthly_admin_cost", "daily_cost", "hourly_rate_ot"]
     fieldsets = (
         ("Employee Information", {
             "fields": (
@@ -1444,6 +1413,13 @@ class EmployeeAdmin(admin.ModelAdmin):
             ),
             "description": "These are summed and divided by 12 to produce the monthly admin cost."
         }),
+        ("Computed Employment Costs (Read-Only)", {
+            "fields": (
+                ("total_salary", "monthly_admin_cost"),
+                ("daily_cost", "hourly_rate_ot"),
+            ),
+            "description": "Daily Cost = (Total Salary + Admin Cost) / 30. Hourly OT Rate = Total Salary / 30 / 8 (Site workers only)."
+        }),
     )
 
     def cost_center(self, obj):
@@ -1456,9 +1432,20 @@ class EmployeeAdmin(admin.ModelAdmin):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.total_salary:,.2f}</div>')
     fmt_total_salary.short_description = "Total Salary"
 
+    def fmt_total_package(self, obj):
+        total = obj.total_salary + obj.monthly_admin_cost
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;color:#000080;">{total:,.2f}</div>')
+    fmt_total_package.short_description = "Total Package"
+
     def fmt_daily_cost(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#2e7d32;font-weight:bold;">{obj.daily_cost:,.2f}</div>')
     fmt_daily_cost.short_description = "Daily Cost"
+
+    def fmt_hourly_rate(self, obj):
+        if obj.hourly_rate_ot > 0:
+            return mark_safe(f'<div style="text-align:right;">{obj.hourly_rate_ot:,.2f}</div>')
+        return mark_safe('<span style="color:#999;">—</span>')
+    fmt_hourly_rate.short_description = "Hourly Rate"
 
     def transfer_status(self, obj):
         active_transfers = obj.transfers.filter(
@@ -1551,14 +1538,13 @@ class PayrollRecordAdmin(admin.ModelAdmin):
 
     @admin.action(description="Allocate selected payroll to projects / BOQ items")
     def allocate_selected(self, request, queryset):
-        from .models import allocate_payroll
         done = 0
         skipped = 0
         for rec in queryset:
             if rec.is_allocated:
                 skipped += 1
                 continue
-            if allocate_payroll_with_progress(rec):
+            if allocate_payroll(rec):
                 done += 1
             else:
                 skipped += 1
@@ -1601,10 +1587,9 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         if request.method == "POST":
             action = request.POST.get("action")
             if action == "yes":
-                from .models import allocate_payroll
                 done = 0
                 for rec in unallocated:
-                    if allocate_payroll_with_progress(rec):
+                    if allocate_payroll(rec):
                         done += 1
                 messages.success(request, f"{done} payroll record(s) allocated successfully.")
                 return redirect("..")
