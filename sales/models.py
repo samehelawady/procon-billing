@@ -528,6 +528,11 @@ class Employee(models.Model):
     date_joined = models.DateField(default=date.today)
     is_active = models.BooleanField(default=True)
 
+    # Bank Details (applicable for Bank Transfer and WPS Agency payments)
+    bank_name = models.CharField(max_length=255, blank=True, null=True, verbose_name="Bank Name")
+    routing_number = models.CharField(max_length=100, blank=True, null=True, verbose_name="Routing Number")
+    iban = models.CharField(max_length=100, blank=True, null=True, verbose_name="IBAN")
+
     class Meta:
         verbose_name = "Employee"
         verbose_name_plural = "Employees"
@@ -584,6 +589,10 @@ class EmployeeTransfer(models.Model):
     overtime_hours = models.DecimalField(
         max_digits=8, decimal_places=2, default=0,
         verbose_name="Overtime Hours"
+    )
+    bonus = models.DecimalField(
+        max_digits=15, decimal_places=2, default=0,
+        verbose_name="Bonus"
     )
     notes = models.TextField(blank=True, verbose_name="Notes")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -656,7 +665,20 @@ class PayrollRecord(models.Model):
 
     @property
     def net_salary(self):
-        gross = self.employee.total_salary + self.overtime_amount
+        # Include cost center OT and bonus
+        cc_ot = Decimal("0")
+        cc_bonus = Decimal("0")
+        try:
+            cc_data = self.cost_centers.aggregate(
+                total_ot=Sum('overtime_hours'),
+                total_bonus=Sum('bonus')
+            )
+            cc_ot = cc_data['total_ot'] or Decimal("0")
+            cc_bonus = cc_data['total_bonus'] or Decimal("0")
+        except Exception:
+            pass
+        cc_ot_amount = money(cc_ot * self.employee.hourly_rate_ot) if self.employee.hourly_rate_ot > 0 else Decimal("0")
+        gross = self.employee.total_salary + self.overtime_amount + cc_ot_amount + cc_bonus
         deductions = self.absence_deduction + self.salary_advance + self.other_deduction
         return money(gross - deductions)
 
@@ -680,6 +702,14 @@ class PayrollRecord(models.Model):
         self.other_allowances_snap = self.employee.other_allowances
         self.total_salary_snap = self.employee.total_salary
         self.overtime_amount_snap = self.overtime_amount
+        # Include cost center OT in overtime snap
+        cc_ot = Decimal("0")
+        try:
+            cc_ot = self.cost_centers.aggregate(total=Sum('overtime_hours'))['total'] or Decimal("0")
+        except Exception:
+            pass
+        if cc_ot > 0 and self.employee.hourly_rate_ot > 0:
+            self.overtime_amount_snap = money(self.overtime_amount + (cc_ot * self.employee.hourly_rate_ot))
         self.absence_deduction_snap = self.absence_deduction
         self.net_salary_snap = self.net_salary
         super().save(*args, **kwargs)
@@ -708,6 +738,10 @@ class PayrollCostCenter(models.Model):
     overtime_hours = models.DecimalField(
         max_digits=8, decimal_places=2, default=0,
         verbose_name="Overtime Hours"
+    )
+    bonus = models.DecimalField(
+        max_digits=15, decimal_places=2, default=0,
+        verbose_name="Bonus"
     )
     notes = models.TextField(blank=True, verbose_name="Notes")
 

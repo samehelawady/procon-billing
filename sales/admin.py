@@ -36,6 +36,7 @@ class ClientAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" target="_blank" style="background:#2e7d32; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Statement</a>',
             url)
+
     statement_button.short_description = "Stmt"
 
     def outstanding_button(self, obj):
@@ -43,6 +44,7 @@ class ClientAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" target="_blank" style="background:#ed6c02; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Outstanding</a>',
             url)
+
     outstanding_button.short_description = "Outst"
 
     def progress_button(self, obj):
@@ -50,6 +52,7 @@ class ClientAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" target="_blank" style="background:#0288d1; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Progress</a>',
             url)
+
     progress_button.short_description = "Prog"
 
     def get_urls(self):
@@ -271,7 +274,7 @@ class ClientAdmin(admin.ModelAdmin):
                 <div class="bar-section">
                     <div class="bar-label">Progress: {progress_pct:.1f}%</div>
                     <div class="bar-track">
-                        <div class="bar-fill" style="width:{min(float(progress_pct),100)}%;"></div>
+                        <div class="bar-fill" style="width:{min(float(progress_pct), 100)}%;"></div>
                     </div>
                 </div>
                 <div class="retention-grid">
@@ -370,14 +373,17 @@ class BOQItemAdmin(admin.ModelAdmin):
 
     def fmt_qty(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity:,.2f}</div>')
+
     fmt_qty.short_description = "Qty"
 
     def fmt_rate(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.rate:,.2f}</div>')
+
     fmt_rate.short_description = "Rate"
 
     def fmt_total(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity * obj.rate:,.2f}</div>')
+
     fmt_total.short_description = "Total"
 
     def get_urls(self):
@@ -415,6 +421,7 @@ class ProjectAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" style="background:#447e9b; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Invoices</a>',
             url)
+
     view_invoices.short_description = "Action"
 
     def analytics_button(self, obj):
@@ -422,6 +429,7 @@ class ProjectAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" target="_blank" style="background:#6a1b9a; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Analytics</a>',
             url)
+
     analytics_button.short_description = "Analytics"
 
     def cost_profit_button(self, obj):
@@ -429,6 +437,7 @@ class ProjectAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" target="_blank" style="background:#d32f2f; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Cost & P&L</a>',
             url)
+
     cost_profit_button.short_description = "Cost"
 
     def _logo_bar(self, logo_url):
@@ -461,7 +470,7 @@ class ProjectAdmin(admin.ModelAdmin):
 
         # Employees with explicit cost-center assignments to this project
         for cc in PayrollCostCenter.objects.filter(
-            project=proj
+                project=proj
         ).select_related('payroll_record__employee'):
             emp = cc.payroll_record.employee
             days = cc.days_count
@@ -476,8 +485,8 @@ class ProjectAdmin(admin.ModelAdmin):
 
             # Admin portion: annual admin costs / 312 working days * days worked
             annual_admin = (
-                emp.annual_benefits + emp.annual_eid_cost +
-                emp.annual_visa_cost + emp.annual_ticket_cost
+                    emp.annual_benefits + emp.annual_eid_cost +
+                    emp.annual_visa_cost + emp.annual_ticket_cost
             )
             admin_portion = money(annual_admin / Decimal("312") * Decimal(days))
 
@@ -495,8 +504,8 @@ class ProjectAdmin(admin.ModelAdmin):
                             Decimal(days_worked) / Decimal(days_in_month)
                         )
                         annual_admin = (
-                            emp.annual_benefits + emp.annual_eid_cost +
-                            emp.annual_visa_cost + emp.annual_ticket_cost
+                                emp.annual_benefits + emp.annual_eid_cost +
+                                emp.annual_visa_cost + emp.annual_ticket_cost
                         )
                         admin_portion = money(
                             annual_admin / Decimal("312") * Decimal(days_worked)
@@ -811,7 +820,7 @@ class ProjectAdmin(admin.ModelAdmin):
         </div>
     </div>
     <div class="bar-track">
-        <div class="bar-fill" style="width:{min(float(progress_pct),100)}%;"></div>
+        <div class="bar-fill" style="width:{min(float(progress_pct), 100)}%;"></div>
     </div>
     <div class="progress-label">Project Progress: {progress_pct:.1f}%</div>
     <div class="two-col" style="margin-top:20px;">
@@ -864,12 +873,14 @@ class ProjectAdmin(admin.ModelAdmin):
         urls = super().get_urls()
         custom = [
             path('<int:pk>/analytics/', self.admin_site.admin_view(self.analytics_view), name='project_analytics'),
-            path('<int:pk>/cost-profit/', self.admin_site.admin_view(self.cost_profit_view), name='project_cost_profit'),
+            path('<int:pk>/cost-profit/', self.admin_site.admin_view(self.cost_profit_view),
+                 name='project_cost_profit'),
         ]
         return custom + urls
 
     def fmt_po(self, obj):
         return mark_safe(f'<div style="text-align: right; font-weight: bold;">{obj.po_amount:,.2f}</div>')
+
     fmt_po.short_description = 'PO Amount'
     fmt_po.admin_order_field = 'po_amount'
 
@@ -877,20 +888,24 @@ class ProjectAdmin(admin.ModelAdmin):
         val = obj.boq_total_value
         color = "green" if obj.is_boq_complete else "red"
         return mark_safe(f'<span style="color: {color}; font-weight: bold; float: right;">{val:,.2f}</span>')
+
     fmt_boq_total.short_description = "BOQ Total"
 
     def fmt_advance(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.advance_percent:,.2f}%</div>')
+
     fmt_advance.short_description = "Adv %"
     fmt_advance.admin_order_field = "advance_percent"
 
     def fmt_ret_a_pct(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.retention_a_percent:,.2f}%</div>')
+
     fmt_ret_a_pct.short_description = "Ret A %"
     fmt_ret_a_pct.admin_order_field = "retention_a_percent"
 
     def fmt_ret_b_pct(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.retention_b_percent:,.2f}%</div>')
+
     fmt_ret_b_pct.short_description = "Ret B %"
     fmt_ret_b_pct.admin_order_field = "retention_b_percent"
 
@@ -909,30 +924,38 @@ class InvoiceItemInline(admin.TabularInline):
 
     def fmt_prev_pct(self, obj):
         return mark_safe(f'<div style="text-align:right;">{obj.prev_percentage:,.2f}%</div>')
+
     fmt_prev_pct.short_description = "Prev %"
 
     def fmt_prev_amt(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.prev_amount:,.2f}</div>')
+
     fmt_prev_amt.short_description = "Prev Amt"
 
     def fmt_gross(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.gross_amount:,.2f}</div>')
+
     fmt_gross.short_description = "Curr Amt"
 
     def fmt_cum_pct(self, obj):
         return mark_safe(f'<div style="text-align:right;">{obj.prev_percentage + obj.current_percentage:,.2f}%</div>')
+
     fmt_cum_pct.short_description = "Cum. %"
 
     def fmt_cum_amt(self, obj):
-        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.prev_amount + obj.gross_amount:,.2f}</div>')
+        return mark_safe(
+            f'<div style="text-align:right;font-weight:bold;">{obj.prev_amount + obj.gross_amount:,.2f}</div>')
+
     fmt_cum_amt.short_description = "Cum. Amt"
 
     def fmt_ret_a(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#ed6c02;">{obj.retention_a_amount:,.2f}</div>')
+
     fmt_ret_a.short_description = "Ret A"
 
     def fmt_ret_b(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#ed6c02;">{obj.retention_b_amount:,.2f}</div>')
+
     fmt_ret_b.short_description = "Ret B"
 
 
@@ -956,7 +979,8 @@ class InvoiceAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ("Invoice Details", {
-            "fields": ("project", ("inv_type", "status"), ("date", "inv_number"), "revision", ("is_advance_invoice", "retention_recovery"))
+            "fields": ("project", ("inv_type", "status"), ("date", "inv_number"), "revision",
+                       ("is_advance_invoice", "retention_recovery"))
         }),
         ("Calculated Billing Summary", {
             "fields": (
@@ -969,30 +993,39 @@ class InvoiceAdmin(admin.ModelAdmin):
 
     def ui_cumulative_work(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.cumulative_work_done:,.2f}</div>')
+
     ui_cumulative_work.short_description = "Total Work Done"
 
     def ui_total_invoiced(self, obj):
-        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.net_total_invoiced_cumulative:,.2f}</div>')
+        return mark_safe(
+            f'<div style="text-align:right;font-weight:bold;">{obj.net_total_invoiced_cumulative:,.2f}</div>')
+
     ui_total_invoiced.short_description = "Total Invoiced (Cum)"
 
     def ui_previously_invoiced(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#666;">({obj.previous_net_total_invoiced:,.2f})</div>')
+
     ui_previously_invoiced.short_description = "Prev Invoiced"
 
     def ui_subtotal_no_vat(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.current_net_before_vat:,.2f}</div>')
+
     ui_subtotal_no_vat.short_description = "Sub Total No VAT"
 
     def ui_vat(self, obj):
         return mark_safe(f'<div style="text-align:right;">{obj.vat_amount:,.2f}</div>')
+
     ui_vat.short_description = "VAT"
 
     def ui_total_before_deductions(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.total_with_vat:,.2f}</div>')
+
     ui_total_before_deductions.short_description = "Total Before Ded."
 
     def ui_payable(self, obj):
-        return mark_safe(f'<div style="text-align:right;"><b style="color:#d32f2f;">{obj.total_after_vat:,.2f}</b></div>')
+        return mark_safe(
+            f'<div style="text-align:right;"><b style="color:#d32f2f;">{obj.total_after_vat:,.2f}</b></div>')
+
     ui_payable.short_description = "Payable"
 
     def ui_previous_work(self, obj):
@@ -1015,6 +1048,7 @@ class InvoiceAdmin(admin.ModelAdmin):
             val = obj.current_retention_a_recovery
             return format_html("<b style='color:green;'>{:,.2f}</b>", val)
         return "0.00"
+
     ui_retention_a_recovery.short_description = "Ret A Recovery"
 
     def ui_retention_b_recovery(self, obj):
@@ -1022,10 +1056,12 @@ class InvoiceAdmin(admin.ModelAdmin):
             val = obj.current_retention_b_recovery
             return format_html("<b style='color:green;'>{:,.2f}</b>", val)
         return "0.00"
+
     ui_retention_b_recovery.short_description = "Ret B Recovery"
 
     def fmt_inv_str(self, obj):
         return format_html('<div style="font-weight: bold; width:120px;">{}</div>', str(obj))
+
     fmt_inv_str.short_description = "Invoice ID"
 
     def print_button(self, obj):
@@ -1033,6 +1069,7 @@ class InvoiceAdmin(admin.ModelAdmin):
         return format_html(
             '<a class="button" href="{}" target="_blank" style="background:#447e9b; color:white; padding: 2px 8px; border-radius: 4px;">Print</a>',
             url)
+
     print_button.short_description = "Report"
 
     def get_urls(self):
@@ -1271,12 +1308,14 @@ class ExpenseCategoryAdmin(admin.ModelAdmin):
 
     def sub_expense_count(self, obj):
         return obj.sub_expenses.count()
+
     sub_expense_count.short_description = "Sub-Expenses"
 
     def get_urls(self):
         urls = super().get_urls()
         custom = [
-            path('subexpense/get-by-category/', self.admin_site.admin_view(self.get_subexpenses), name='subexpense_get_by_category'),
+            path('subexpense/get-by-category/', self.admin_site.admin_view(self.get_subexpenses),
+                 name='subexpense_get_by_category'),
         ]
         return custom + urls
 
@@ -1302,6 +1341,7 @@ class ExpenseAdmin(admin.ModelAdmin):
 
     def fmt_amount(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.amount:,.2f}</div>')
+
     fmt_amount.short_description = "Amount"
 
     def get_form(self, request, obj=None, **kwargs):
@@ -1343,7 +1383,6 @@ class ExpenseAdmin(admin.ModelAdmin):
 # =============================================================================
 
 
-
 class EmployeeTransferInline(admin.TabularInline):
     model = EmployeeTransfer
     extra = 0
@@ -1376,6 +1415,9 @@ class EmployeeAdminForm(forms.ModelForm):
             'monthly_admin_cost': 'Monthly Admin Cost',
             'daily_cost': 'Daily Cost',
             'hourly_rate_ot': 'Hourly Rate OT',
+            'bank_name': 'Bank Name',
+            'routing_number': 'Routing Number',
+            'iban': 'IBAN',
         }
 
 
@@ -1385,7 +1427,7 @@ class EmployeeAdmin(admin.ModelAdmin):
     list_display = [
         "employee_id", "name", "employee_type", "payment_type",
         "cost_center", "fmt_total_salary", "fmt_total_package",
-        "fmt_daily_cost", "fmt_hourly_rate", "is_active", "transfer_status"
+        "fmt_daily_cost", "fmt_hourly_rate", "fmt_bank_info", "is_active", "transfer_status"
     ]
     list_filter = ["employee_type", "payment_type", "is_head_office", "is_active", "project"]
     search_fields = ["name", "employee_id"]
@@ -1420,31 +1462,51 @@ class EmployeeAdmin(admin.ModelAdmin):
             ),
             "description": "Daily Cost = (Total Salary + Admin Cost) / 30. Hourly OT Rate = Total Salary / 30 / 8 (Site workers only)."
         }),
+        ("Bank Details", {
+            "fields": (
+                ("bank_name", "routing_number"),
+                ("iban",),
+            ),
+            "description": "Bank information for Bank Transfer or WPS Agency payments."
+        }),
     )
 
     def cost_center(self, obj):
         if obj.is_head_office:
             return mark_safe('<b style="color:#000080;">HEAD OFFICE</b>')
         return obj.project.project_id_code if obj.project else mark_safe('<span style="color:#999;">—</span>')
+
     cost_center.short_description = "Cost Center"
+
+    def fmt_bank_info(self, obj):
+        if obj.bank_name:
+            return mark_safe(
+                f'<div style="font-size:10px;"><b>{obj.bank_name}</b><br><span style="color:#666;">IBAN: {obj.iban or "—"}</span></div>')
+        return mark_safe('<span style="color:#999;">—</span>')
+
+    fmt_bank_info.short_description = "Bank Info"
 
     def fmt_total_salary(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.total_salary:,.2f}</div>')
+
     fmt_total_salary.short_description = "Total Salary"
 
     def fmt_total_package(self, obj):
         total = obj.total_salary + obj.monthly_admin_cost
         return mark_safe(f'<div style="text-align:right;font-weight:bold;color:#000080;">{total:,.2f}</div>')
+
     fmt_total_package.short_description = "Total Package"
 
     def fmt_daily_cost(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#2e7d32;font-weight:bold;">{obj.daily_cost:,.2f}</div>')
+
     fmt_daily_cost.short_description = "Daily Cost"
 
     def fmt_hourly_rate(self, obj):
         if obj.hourly_rate_ot > 0:
             return mark_safe(f'<div style="text-align:right;">{obj.hourly_rate_ot:,.2f}</div>')
         return mark_safe('<span style="color:#999;">—</span>')
+
     fmt_hourly_rate.short_description = "Hourly Rate"
 
     def transfer_status(self, obj):
@@ -1456,6 +1518,7 @@ class EmployeeAdmin(admin.ModelAdmin):
             t = active_transfers.first()
             return mark_safe(f'<b style="color:#ed6c02;">to {t.to_project.project_id_code}</b>')
         return mark_safe('<span style="color:#999;">—</span>')
+
     transfer_status.short_description = "Transfer"
 
     def changelist_view(self, request, extra_context=None):
@@ -1474,6 +1537,39 @@ class EmployeeAdmin(admin.ModelAdmin):
                 )
         return super().changelist_view(request, extra_context)
 
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+
+        ]
+        return custom + urls
+
+    def _logo_bar(self, logo_url):
+        if logo_url:
+            return f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>'
+        return ''
+
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        # Override widget for overtime_hours in the inline (if field exists)
+        if 'overtime_hours' in formset.form.base_fields:
+            formset.form.base_fields['overtime_hours'].widget = forms.NumberInput(attrs={'step': '1', 'min': '0'})
+        return formset
+
+    def fmt_overtime_amount(self, obj):
+        try:
+            ot_hours = obj.overtime_hours
+        except Exception:
+            ot_hours = Decimal("0")
+        if ot_hours and ot_hours > 0 and obj.payroll_record and obj.payroll_record.employee:
+            rate = obj.payroll_record.employee.hourly_rate_ot
+            if rate > 0:
+                amt = money(ot_hours * rate)
+                return mark_safe(f'<div style="text-align:right;font-weight:bold;">{amt:,.2f}</div>')
+        return mark_safe('<span style="color:#999;">—</span>')
+
+    fmt_overtime_amount.short_description = "OT Amount"
+
 
 class PayrollAllocationInline(admin.TabularInline):
     model = PayrollAllocation
@@ -1488,25 +1584,46 @@ class PayrollAllocationInline(admin.TabularInline):
 class PayrollCostCenterInline(admin.TabularInline):
     model = PayrollCostCenter
     extra = 0
-    fields = ["project", "from_date", "to_date", "days_count", "overtime_hours", "prorated_salary", "fmt_overtime_amount", "notes"]
+    fields = ["project", "from_date", "to_date", "days_count", "overtime_hours", "bonus", "prorated_salary",
+              "fmt_overtime_amount", "notes"]
     readonly_fields = ["days_count", "prorated_salary", "fmt_overtime_amount"]
 
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        # Override widget for overtime_hours in the inline (if field exists)
+        if 'overtime_hours' in formset.form.base_fields:
+            formset.form.base_fields['overtime_hours'].widget = forms.NumberInput(attrs={'step': '1', 'min': '0'})
+        return formset
+
     def fmt_overtime_amount(self, obj):
-        if obj.overtime_hours and obj.overtime_hours > 0 and obj.payroll_record and obj.payroll_record.employee:
+        try:
+            ot_hours = obj.overtime_hours
+        except Exception:
+            ot_hours = Decimal("0")
+        if ot_hours and ot_hours > 0 and obj.payroll_record and obj.payroll_record.employee:
             rate = obj.payroll_record.employee.hourly_rate_ot
             if rate > 0:
-                amt = money(obj.overtime_hours * rate)
+                amt = money(ot_hours * rate)
                 return mark_safe(f'<div style="text-align:right;font-weight:bold;">{amt:,.2f}</div>')
         return mark_safe('<span style="color:#999;">—</span>')
+
     fmt_overtime_amount.short_description = "OT Amount"
+
+
+class PayrollRecordAdminForm(forms.ModelForm):
+    class Meta:
+        model = PayrollRecord
+        fields = '__all__'
+        exclude = ['overtime_hours']
 
 
 @admin.register(PayrollRecord)
 class PayrollRecordAdmin(admin.ModelAdmin):
+    form = PayrollRecordAdminForm
     inlines = [PayrollCostCenterInline, PayrollAllocationInline]
     list_display = [
         "employee", "month", "fmt_total_salary", "fmt_overtime", "fmt_absence",
-        "fmt_advance", "fmt_other_ded", "fmt_net_salary", "allocation_status"
+        "fmt_advance", "fmt_other_ded", "fmt_net_salary", "timesheet_button", "allocation_status"
     ]
     list_filter = ["month", "is_allocated", "employee__employee_type", "employee__payment_type"]
     search_fields = ["employee__name", "employee__employee_id"]
@@ -1515,41 +1632,49 @@ class PayrollRecordAdmin(admin.ModelAdmin):
 
     def fmt_total_salary(self, obj):
         return mark_safe(f'<div style="text-align:right;">{obj.total_salary_snap:,.2f}</div>')
+
     fmt_total_salary.short_description = "Total Salary"
 
     def fmt_overtime(self, obj):
         if obj.employee.employee_type == 'Site':
-            # Total OT hours = record OT + sum of cost center OT hours
-            cc_ot_hours = obj.cost_centers.aggregate(total=Sum('overtime_hours'))['total'] or Decimal("0")
-            total_ot_hours = obj.overtime_hours + cc_ot_hours
-            # Calculate OT amount from total hours
-            if total_ot_hours > 0 and obj.employee.hourly_rate_ot > 0:
-                total_ot_amount = money(total_ot_hours * obj.employee.hourly_rate_ot)
-                return mark_safe(f'<div style="text-align:right;">{total_ot_hours}h / {total_ot_amount:,.2f}</div>')
-            return mark_safe(f'<div style="text-align:right;">{obj.overtime_hours}h / {obj.overtime_amount_snap:,.2f}</div>')
+            # Only show cost center OT hours (per date range)
+            try:
+                cc_ot_hours = obj.cost_centers.aggregate(total=Sum('overtime_hours'))['total'] or Decimal("0")
+            except Exception:
+                cc_ot_hours = Decimal("0")
+            if cc_ot_hours > 0 and obj.employee.hourly_rate_ot > 0:
+                ot_amount = money(cc_ot_hours * obj.employee.hourly_rate_ot)
+                return mark_safe(f'<div style="text-align:right;">{cc_ot_hours}h / {ot_amount:,.2f}</div>')
+            return mark_safe('<span style="color:#999;">—</span>')
         return mark_safe('<span style="color:#999;">—</span>')
+
     fmt_overtime.short_description = "OT (Hrs/Amt)"
 
     def fmt_absence(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.absence_deduction_snap:,.2f})</div>')
+
     fmt_absence.short_description = "Absence"
 
     def fmt_advance(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.salary_advance:,.2f})</div>')
+
     fmt_advance.short_description = "Advance"
 
     def fmt_other_ded(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.other_deduction:,.2f})</div>')
+
     fmt_other_ded.short_description = "Other Ded."
 
     def fmt_net_salary(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.net_salary_snap:,.2f}</div>')
+
     fmt_net_salary.short_description = "Net Salary"
 
     def allocation_status(self, obj):
         if obj.is_allocated:
             return mark_safe('<b style="color:#2e7d32;">ALLOCATED</b>')
         return mark_safe('<b style="color:#d32f2f;">PENDING</b>')
+
     allocation_status.short_description = "Status"
 
     @admin.action(description="Allocate selected payroll to projects / BOQ items")
@@ -1582,6 +1707,235 @@ class PayrollRecordAdmin(admin.ModelAdmin):
             )
         return super().changelist_view(request, extra_context)
 
+    def timesheet_button(self, obj):
+        url = reverse('admin:payroll_timesheet', args=[obj.pk])
+        return format_html(
+            '<a class="button" href="{}" target="_blank" style="background:#0288d1; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Time Sheet</a>',
+            url)
+
+    timesheet_button.short_description = "Time Sheet"
+
+    def _logo_bar(self, logo_url):
+        if logo_url:
+            return f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>'
+        return ''
+
+    def timesheet_view(self, request, pk):
+        payroll = get_object_or_404(PayrollRecord, pk=pk)
+        emp = payroll.employee
+        company = CompanyProfile.objects.first()
+        logo_url = company.logo.url if company and company.logo else ''
+
+        # Month is from the payroll record itself
+        month_start = payroll.month
+        if month_start.month == 12:
+            next_month = date(month_start.year + 1, 1, 1)
+        else:
+            next_month = date(month_start.year, month_start.month + 1, 1)
+        month_end = next_month - timedelta(days=1)
+        days_in_month = month_end.day
+
+        # Get all cost centers for this payroll record
+        cost_centers = list(PayrollCostCenter.objects.filter(
+            payroll_record=payroll
+        ).select_related('project'))
+
+        # Build day-by-day attendance
+        day_entries = []
+        for day_num in range(1, days_in_month + 1):
+            day_date = month_start.replace(day=day_num)
+
+            # Find cost center for this day
+            cc_for_day = None
+            for cc in cost_centers:
+                if cc.from_date <= day_date <= cc.to_date:
+                    cc_for_day = cc
+                    break
+
+            if cc_for_day:
+                # Check if this is the LAST day of the cost center period
+                is_last_day = (day_date == cc_for_day.to_date)
+                day_entries.append({
+                    'date': day_date,
+                    'project': cc_for_day.project,
+                    'status': 'Present',
+                    'ot_hours': cc_for_day.overtime_hours if is_last_day else Decimal("0"),
+                    'bonus': cc_for_day.bonus if is_last_day else Decimal("0"),
+                    'is_last_day': is_last_day,
+                    'is_weekend': day_date.weekday() >= 5,
+                })
+            else:
+                # Check if employee is assigned to a project permanently
+                if emp.project:
+                    day_entries.append({
+                        'date': day_date,
+                        'project': emp.project,
+                        'status': 'Present',
+                        'ot_hours': Decimal("0"),
+                        'bonus': Decimal("0"),
+                        'is_last_day': False,
+                        'is_weekend': day_date.weekday() >= 5,
+                    })
+                else:
+                    day_entries.append({
+                        'date': day_date,
+                        'project': None,
+                        'status': '—',
+                        'ot_hours': Decimal("0"),
+                        'bonus': Decimal("0"),
+                        'is_last_day': False,
+                        'is_weekend': day_date.weekday() >= 5,
+                    })
+
+        # Build rows
+        rows = ""
+        total_ot = Decimal("0")
+        total_bonus = Decimal("0")
+        present_days = 0
+        for entry in day_entries:
+            day_name = entry['date'].strftime('%a')
+            date_str = entry['date'].strftime('%d-%b-%Y')
+            proj_name = entry['project'].project_name if entry['project'] else '—'
+            proj_code = entry['project'].project_id_code if entry['project'] else ''
+            ot = money(entry['ot_hours'])
+            bonus = money(entry['bonus'])
+            total_ot += ot
+            total_bonus += bonus
+            if entry['status'] == 'Present':
+                present_days += 1
+
+            # Highlight last day of cost center period
+            last_day_style = "background:#e8f5e9; font-weight:bold;" if entry['is_last_day'] else ""
+            weekend_style = "background:#f5f5f5;" if entry['is_weekend'] and not entry['is_last_day'] else ""
+            row_style = last_day_style or weekend_style
+
+            rows += f"""<tr style="{row_style}">
+                <td style="text-align:center; font-weight:bold;">{day_name}</td>
+                <td>{date_str}</td>
+                <td><b>{proj_code}</b> — {proj_name}</td>
+                <td style="text-align:center;">{entry['status']}</td>
+                <td style="text-align:right; font-weight:bold; color:#ed6c02;">{ot:,.2f}</td>
+                <td style="text-align:right; font-weight:bold; color:#2e7d32;">{bonus:,.2f}</td>
+            </tr>"""
+
+        # Summary stats - use exact totals from cost centers (not prorated)
+        exact_ot = Decimal("0")
+        exact_bonus = Decimal("0")
+        for cc in cost_centers:
+            exact_ot += cc.overtime_hours
+            exact_bonus += cc.bonus
+
+        hourly_rate = emp.hourly_rate_ot if emp.employee_type == 'Site' else Decimal("0")
+        ot_amount = money(exact_ot * hourly_rate) if hourly_rate > 0 else Decimal("0")
+        total_extra = money(ot_amount + exact_bonus)
+
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+    @page {{ size: A4 portrait; margin: 10mm; }}
+    * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; color: #222; padding: 10px; }}
+    .logo-bar {{ text-align: right; margin-bottom: 6px; }}
+    .logo-bar img {{ max-height: 60px; max-width: 180px; object-fit: contain; }}
+    .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
+    .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
+    .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; line-height: 1.6; font-size: 10px; }}
+    .meta-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }}
+    .meta-card {{ border: 1px solid #ccc; border-radius: 6px; padding: 8px; background: #fafafa; }}
+    .meta-label {{ font-size: 8px; color: #666; text-transform: uppercase; margin-bottom: 3px; }}
+    .meta-value {{ font-size: 12px; font-weight: bold; color: #000080; }}
+    .report-table {{ width: 100%; border-collapse: collapse; font-size: 9px; margin-top: 6px; }}
+    .report-table th {{ background: #e8e8e8; border: 1px solid #999; padding: 6px; text-align: center; font-weight: bold; font-size: 8px; }}
+    .report-table td {{ border: 1px solid #ccc; padding: 5px; }}
+    .report-table tr:nth-child(even) {{ background: #fafafa; }}
+    .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; }}
+    .summary-box {{ margin-top: 15px; padding: 12px; background: #000080; color: white; text-align: center; font-size: 14px; border-radius: 6px; }}
+    .signature-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-top: 30px; }}
+    .signature-block {{ text-align: center; }}
+    .signature-line {{ border-top: 1px solid #333; margin-top: 40px; padding-top: 5px; font-size: 10px; }}
+</style></head><body>
+    {self._logo_bar(logo_url)}
+    <div class="report-title">WORKER TIME SHEET</div>
+    <div class="report-subtitle">{emp.name} — {month_start.strftime('%B %Y')}</div>
+
+    <div class="meta-grid">
+        <div class="meta-card">
+            <div class="meta-label">Employee ID</div>
+            <div class="meta-value">{emp.employee_id}</div>
+        </div>
+        <div class="meta-card">
+            <div class="meta-label">Employee Type</div>
+            <div class="meta-value">{emp.get_employee_type_display()}</div>
+        </div>
+        <div class="meta-card">
+            <div class="meta-label">Payment Type</div>
+            <div class="meta-value">{emp.get_payment_type_display()}</div>
+        </div>
+        <div class="meta-card">
+            <div class="meta-label">Basic Salary</div>
+            <div class="meta-value">{emp.basic_salary:,.2f}</div>
+        </div>
+        <div class="meta-card">
+            <div class="meta-label">Hourly OT Rate</div>
+            <div class="meta-value">{hourly_rate:,.2f}</div>
+        </div>
+        <div class="meta-card">
+            <div class="meta-label">Daily Rate</div>
+            <div class="meta-value">{emp.daily_rate:,.2f}</div>
+        </div>
+    </div>
+
+    <div class="meta-box">
+        <b>Bank Name:</b> {emp.bank_name or 'N/A'} &nbsp;|&nbsp;
+        <b>IBAN:</b> {emp.iban or 'N/A'} &nbsp;|&nbsp;
+        <b>Routing:</b> {emp.routing_number or 'N/A'}
+    </div>
+
+    <table class="report-table">
+        <thead>
+            <tr>
+                <th style="width:8%;">Day</th>
+                <th style="width:15%;">Date</th>
+                <th style="width:40%;">Project</th>
+                <th style="width:10%;">Status</th>
+                <th style="width:10%;">OT Hours</th>
+                <th style="width:10%;">Bonus</th>
+            </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+        <tfoot>
+            <tr class="total-row">
+                <td colspan="3"><b>TOTALS</b></td>
+                <td style="text-align:center;"><b>{present_days} Days</b></td>
+                <td style="text-align:right;"><b>{exact_ot:,.2f}h</b></td>
+                <td style="text-align:right;"><b>{exact_bonus:,.2f}</b></td>
+            </tr>
+        </tfoot>
+    </table>
+
+    <div class="summary-box">
+        <b>Total OT Hours:</b> {exact_ot:,.2f}h &nbsp;|&nbsp;
+        <b>Total OT Amount:</b> {ot_amount:,.2f} &nbsp;|&nbsp;
+        <b>Total Bonus:</b> {exact_bonus:,.2f} &nbsp;|&nbsp;
+        <b>Total Extra:</b> {total_extra:,.2f}
+    </div>
+
+    <div class="signature-grid">
+        <div class="signature-block">
+            <div class="signature-line">Worker Signature</div>
+        </div>
+        <div class="signature-block">
+            <div class="signature-line">Site Supervisor</div>
+        </div>
+        <div class="signature-block">
+            <div class="signature-line">HR Manager</div>
+        </div>
+    </div>
+
+    <script>window.onload = function() {{ window.print(); }}</script>
+</body></html>"""
+        return HttpResponse(html)
+
     def get_urls(self):
         urls = super().get_urls()
         custom = [
@@ -1589,6 +1943,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
             path("reports/staff/", self.admin_site.admin_view(self.staff_report), name="payroll_staff_report"),
             path("reports/wps/", self.admin_site.admin_view(self.wps_report), name="payroll_wps_report"),
             path("reports/cash/", self.admin_site.admin_view(self.cash_report), name="payroll_cash_report"),
+            path('<int:pk>/timesheet/', self.admin_site.admin_view(self.timesheet_view), name='payroll_timesheet'),
         ]
         return custom + urls
 
@@ -1711,7 +2066,8 @@ class PayrollRecordAdmin(admin.ModelAdmin):
 
         html = self._payroll_report_wrapper(
             "OFFICE STAFF PAYROLL REPORT",
-            ["Emp ID", "Name", "Basic", "Housing", "Transport", "Other", "Total", "Absence", "Advance", "Other Ded.", "Net"],
+            ["Emp ID", "Name", "Basic", "Housing", "Transport", "Other", "Total", "Absence", "Advance", "Other Ded.",
+             "Net"],
             rows, totals, "Bank Transfer"
         )
         return HttpResponse(html)
@@ -1876,4 +2232,5 @@ class PricingProjectAdmin(admin.ModelAdmin):
     def fmt_total(self, obj):
         total = sum(item.proposed_total for item in obj.boq_items.all())
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{total:,.2f}</div>')
+
     fmt_total.short_description = "Proposed Total"
