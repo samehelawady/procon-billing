@@ -9,7 +9,7 @@ from django.utils.html import format_html
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.urls import path, reverse
-from datetime import date
+from datetime import date, timedelta
 import calendar
 from django.utils import timezone
 
@@ -561,6 +561,52 @@ class Employee(models.Model):
         return money(self.total_salary / Decimal("30"))
 
 
+# =============================================================================
+# EMPLOYEE TRANSFER MODEL
+# =============================================================================
+
+class EmployeeTransfer(models.Model):
+    """Temporary project transfer for site workers."""
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='transfers',
+        verbose_name="Employee"
+    )
+    to_project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='transferred_workers',
+        verbose_name="Temporary Project"
+    )
+    from_date = models.DateField(verbose_name="From Date")
+    to_date = models.DateField(verbose_name="To Date")
+    notes = models.TextField(blank=True, verbose_name="Notes")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-from_date']
+        verbose_name = "Employee Transfer"
+        verbose_name_plural = "Employee Transfers"
+
+    def __str__(self):
+        return f"{self.employee.name} → {self.to_project.project_id_code} ({self.from_date} to {self.to_date})"
+
+    @property
+    def days_count(self):
+        """Calculate working days in the transfer period."""
+        if self.from_date and self.to_date:
+            delta = self.to_date - self.from_date
+            return delta.days + 1
+        return 0
+
+    def clean(self):
+        if self.from_date and self.to_date and self.from_date > self.to_date:
+            raise ValidationError("From date must be before to date.")
+        if self.employee.project and self.to_project == self.employee.project:
+            raise ValidationError("Cannot transfer to the same project.")
+
+
 class PayrollRecord(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="payroll_records")
     month = models.DateField(help_text="First day of the month")
@@ -620,6 +666,82 @@ class PayrollRecord(models.Model):
         self.absence_deduction_snap = self.absence_deduction
         self.net_salary_snap = self.net_salary
         super().save(*args, **kwargs)
+
+
+# =============================================================================
+# PAYROLL COST CENTER MODEL
+# =============================================================================
+
+class PayrollCostCenter(models.Model):
+    """Temporary cost center assignment within a payroll period."""
+    payroll_record = models.ForeignKey(
+        PayrollRecord,
+        on_delete=models.CASCADE,
+        related_name='cost_centers',
+        verbose_name="Payroll Record"
+    )
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='payroll_cost_centers',
+        verbose_name="Project (Cost Center)"
+    )
+    from_date = models.DateField(verbose_name="From Date")
+    to_date = models.DateField(verbose_name="To Date")
+    notes = models.TextField(blank=True, verbose_name="Notes")
+
+    class Meta:
+        ordering = ['-from_date']
+        verbose_name = "Payroll Cost Center"
+        verbose_name_plural = "Payroll Cost Centers"
+
+    def __str__(self):
+        return f"{self.payroll_record.employee.name} @ {self.project.project_id_code} ({self.from_date} to {self.to_date})"
+
+    @property
+    def days_count(self):
+        """Calculate days in the cost center period."""
+        if self.from_date and self.to_date:
+            delta = self.to_date - self.from_date
+            return delta.days + 1
+        return 0
+
+    @property
+    def prorated_salary(self):
+        """Calculate prorated salary for this period."""
+        if not self.payroll_record or not self.days_count:
+            return Decimal("0")
+
+        monthly_net = self.payroll_record.net_salary_snap
+        month = self.payroll_record.month
+
+        if month.month == 12:
+            next_month = date(month.year + 1, 1, 1)
+        else:
+            next_month = date(month.year, month.month + 1, 1)
+        days_in_month = (next_month - month).days
+
+        if days_in_month > 0:
+            daily_rate = monthly_net / Decimal(days_in_month)
+            return money(daily_rate * Decimal(self.days_count))
+        return Decimal("0")
+
+    def clean(self):
+        if self.from_date and self.to_date and self.from_date > self.to_date:
+            raise ValidationError("From date must be before to date.")
+
+        if self.payroll_record and self.payroll_record.month:
+            month = self.payroll_record.month
+            if month.month == 12:
+                next_month = date(month.year + 1, 1, 1)
+            else:
+                next_month = date(month.year, month.month + 1, 1)
+            month_end = next_month - timedelta(days=1)
+
+            if self.from_date < month or self.to_date > month_end:
+                raise ValidationError(
+                    f"Dates must be within the payroll month ({month.strftime('%b %Y')})."
+                )
 
 
 class PayrollAllocation(models.Model):

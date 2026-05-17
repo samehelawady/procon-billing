@@ -5,7 +5,7 @@ from django.utils.safestring import mark_safe
 from .models import (
     Client, Project, BOQItem, Invoice, InvoiceItem, CompanyProfile, money,
     ExpenseCategory, SubExpense, Expense,
-    Employee, PayrollRecord, PayrollAllocation,
+    Employee, EmployeeTransfer, PayrollRecord, PayrollCostCenter, PayrollAllocation,
     PricingProject, PricingBOQItem
 )
 from django.urls import reverse
@@ -59,20 +59,21 @@ class ClientAdmin(admin.ModelAdmin):
         ]
         return custom + urls
 
-    def _report_wrapper(self, body_html, header_img_url='', footer_img_url=''):
+    def _logo_bar(self, logo_url):
+        """Returns the top-right logo HTML snippet."""
+        if logo_url:
+            return f'<div class="logo-bar"><img src="{logo_url}" alt="Logo"></div>'
+        return ''
+
+    def _report_wrapper(self, body_html, logo_url=''):
         return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
-    @page {{ size: A4 portrait; margin: 18mm 12mm 18mm 12mm;
-        @top-center {{ content: element(page-header); vertical-align: top; }}
-        @bottom-center {{ content: element(page-footer); vertical-align: bottom; }}
-    }}
-    #page-header {{ position: running(page-header); width: 100%; text-align: center; margin-bottom: 8px; }}
-    #page-header img {{ max-height: 120px; width: 100%; object-fit: contain; }}
-    #page-footer {{ position: running(page-footer); width: 100%; text-align: center; margin-top: 8px; }}
-    #page-footer img {{ max-height: 90px; width: 100%; object-fit: contain; }}
+    @page {{ size: A4 portrait; margin: 10mm; }}
     * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; color: #222; padding: 20px; }}
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; color: #222; padding: 10px; }}
+    .logo-bar {{ text-align: right; margin-bottom: 6px; }}
+    .logo-bar img {{ max-height: 60px; max-width: 180px; object-fit: contain; }}
     .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
     .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
     .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 20px; line-height: 1.6; font-size: 10px; }}
@@ -100,16 +101,14 @@ class ClientAdmin(admin.ModelAdmin):
     .ret-title {{ font-size: 9px; font-weight: bold; color: #000080; margin-bottom: 6px; text-align: center; border-bottom: 1px solid #eee; padding-bottom: 4px; }}
     .ret-row {{ display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 3px; }}
 </style></head><body>
-    <div id="page-header">{"<img src='" + header_img_url + "' alt='Header'>" if header_img_url else ""}</div>
+    {self._logo_bar(logo_url)}
     {body_html}
-    <div id="page-footer">{"<img src='" + footer_img_url + "' alt='Footer'>" if footer_img_url else ""}</div>
 </body></html>"""
 
     def statement_view(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
         company = CompanyProfile.objects.first()
-        header_img_url = company.letter_header.url if company and company.letter_header else ''
-        footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
+        logo_url = company.logo.url if company and company.logo else ''
         invoices = Invoice.objects.filter(
             project__client=client, inv_type='T'
         ).exclude(status='Paid').select_related('project').order_by('date')
@@ -158,14 +157,13 @@ class ClientAdmin(admin.ModelAdmin):
                     </tr>
                 </tfoot>
             </table>
-        """, header_img_url, footer_img_url)
+        """, logo_url)
         return HttpResponse(html)
 
     def outstanding_view(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
         company = CompanyProfile.objects.first()
-        header_img_url = company.letter_header.url if company and company.letter_header else ''
-        footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
+        logo_url = company.logo.url if company and company.logo else ''
         invoices = Invoice.objects.filter(
             project__client=client
         ).exclude(status='Paid').select_related('project').order_by('date')
@@ -218,14 +216,13 @@ class ClientAdmin(admin.ModelAdmin):
             <div class="grand-total-box">
                 <b>GRAND TOTAL OUTSTANDING:</b> {(total_draft + total_approved):,.2f}
             </div>
-        """, header_img_url, footer_img_url)
+        """, logo_url)
         return HttpResponse(html)
 
     def progress_view(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
         company = CompanyProfile.objects.first()
-        header_img_url = company.letter_header.url if company and company.letter_header else ''
-        footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
+        logo_url = company.logo.url if company and company.logo else ''
         projects = client.projects.all().prefetch_related('invoices', 'boq_items')
 
         cards = ""
@@ -269,14 +266,12 @@ class ClientAdmin(admin.ModelAdmin):
                         <div class="metric-value" style="color:#ed6c02;">{net_ret:,.2f}</div>
                     </div>
                 </div>
-
                 <div class="bar-section">
                     <div class="bar-label">Progress: {progress_pct:.1f}%</div>
                     <div class="bar-track">
                         <div class="bar-fill" style="width:{min(float(progress_pct),100)}%;"></div>
                     </div>
                 </div>
-
                 <div class="retention-grid">
                     <div class="ret-block">
                         <div class="ret-title">Retention A ({proj.retention_a_percent}%)</div>
@@ -308,7 +303,7 @@ class ClientAdmin(admin.ModelAdmin):
                 <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
             </div>
             <div class="cards-container">{cards}</div>
-        """, header_img_url, footer_img_url)
+        """, logo_url)
         return HttpResponse(html)
 
 
@@ -318,34 +313,24 @@ class BOQItemInline(admin.TabularInline):
 
 
 class ExpenseInlineForm(forms.ModelForm):
-    """Custom form that filters boq_item and sub_category based on parent project."""
-
     class Meta:
         model = Expense
         fields = '__all__'
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        # Filter boq_item by the parent project (from inline instance or initial)
         project = None
-
-        # If editing existing expense
         if self.instance and self.instance.pk and self.instance.project:
             project = self.instance.project
-        # If adding new expense in project inline, get project from parent
         elif self.initial.get('project'):
             try:
                 project = Project.objects.get(pk=self.initial['project'])
             except Project.DoesNotExist:
                 pass
-
         if project:
             self.fields['boq_item'].queryset = BOQItem.objects.filter(project=project)
         else:
             self.fields['boq_item'].queryset = BOQItem.objects.none()
-
-        # Filter sub_category by category
         if self.instance and self.instance.pk and self.instance.category:
             self.fields['sub_category'].queryset = SubExpense.objects.filter(parent=self.instance.category)
         else:
@@ -361,9 +346,9 @@ class ExpenseInline(admin.TabularInline):
     def get_formset(self, request, obj=None, **kwargs):
         formset = super().get_formset(request, obj, **kwargs)
         if obj:
-            # Store project on formset class for form access
             formset.parent_project = obj
         return formset
+
 
 @admin.register(CompanyProfile)
 class CompanyProfileAdmin(admin.ModelAdmin):
@@ -444,12 +429,15 @@ class ProjectAdmin(admin.ModelAdmin):
             url)
     cost_profit_button.short_description = "Cost"
 
+    def _logo_bar(self, logo_url):
+        if logo_url:
+            return f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>'
+        return ''
+
     def cost_profit_view(self, request, pk):
-        from django.db.models import Sum
         proj = get_object_or_404(Project, pk=pk)
         company = CompanyProfile.objects.first()
-        header_img_url = company.letter_header.url if company and company.letter_header else ''
-        footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
+        logo_url = company.logo.url if company and company.logo else ''
 
         latest_inv = Invoice.objects.filter(
             project=proj, is_advance_invoice=False
@@ -486,7 +474,7 @@ class ProjectAdmin(admin.ModelAdmin):
             profit_pct = (profit_loss / revenue * 100) if revenue > 0 else Decimal("0")
 
             profit_color = "#2e7d32" if profit_loss >= 0 else "#d32f2f"
-            profit_icon = "▲" if profit_loss >= 0 else "▼"
+            profit_icon = "+" if profit_loss >= 0 else "-"
 
             grand_revenue += revenue
             grand_expenses += total_expenses
@@ -506,7 +494,7 @@ class ProjectAdmin(admin.ModelAdmin):
                     <td class='col-num' style='color:#ed6c02;'>{payroll_allocations:,.2f}</td>
                     <td class='col-num' style='font-weight:bold;'>{total_expenses:,.2f}</td>
                     <td class='col-num' style='color:{profit_color}; font-weight:bold; font-size:11px;'>
-                        {profit_icon} {profit_loss:,.2f}
+                        {profit_icon} {abs(profit_loss):,.2f}
                     </td>
                     <td class='col-num' style='color:{profit_color};'>{profit_pct:.1f}%</td>
                 </tr>
@@ -523,16 +511,11 @@ class ProjectAdmin(admin.ModelAdmin):
         html = f"""<!DOCTYPE html>
     <html><head><meta charset="UTF-8">
     <style>
-        @page {{ size: A4 landscape; margin: 15mm 10mm 15mm 10mm;
-            @top-center {{ content: element(page-header); vertical-align: top; }}
-            @bottom-center {{ content: element(page-footer); vertical-align: bottom; }}
-        }}
-        #page-header {{ position: running(page-header); width: 100%; text-align: center; margin-bottom: 6px; }}
-        #page-header img {{ max-height: 100px; width: 100%; object-fit: contain; }}
-        #page-footer {{ position: running(page-footer); width: 100%; text-align: center; margin-top: 6px; }}
-        #page-footer img {{ max-height: 80px; width: 100%; object-fit: contain; }}
+        @page {{ size: A4 landscape; margin: 10mm; }}
         * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-        body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; color: #222; padding: 15px; }}
+        body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; color: #222; padding: 10px; }}
+        .logo-bar {{ text-align: right; margin-bottom: 6px; }}
+        .logo-bar img {{ max-height: 60px; max-width: 180px; object-fit: contain; }}
         .report-title {{ font-size: 20px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
         .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 12px; }}
         .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; line-height: 1.5; font-size: 10px; display: flex; justify-content: space-between; }}
@@ -562,7 +545,7 @@ class ProjectAdmin(admin.ModelAdmin):
         .bar-fill {{ height: 100%; background: linear-gradient(90deg, #447e9b, #2e7d32); border-radius: 8px; }}
         @media print {{ .no-print {{ display: none; }} }}
     </style></head><body>
-        <div id="page-header">{"<img src='" + header_img_url + "' alt='Header'>" if header_img_url else ""}</div>
+        {self._logo_bar(logo_url)}
         <div class="report-title">PROJECT COST & PROFITABILITY ANALYSIS</div>
         <div class="report-subtitle">{proj.project_id_code} — {proj.project_name}</div>
         <div class="meta-box">
@@ -603,7 +586,7 @@ class ProjectAdmin(admin.ModelAdmin):
                     <th class="col-num">Cum. Qty</th>
                     <th class="col-num">Amount</th>
                     <th class="col-num">Direct</th>
-                    <th class="col-num">Payroll</th>
+                    <th class="col-num">Manpower</th>
                     <th class="col-num">Total</th>
                     <th class="col-num">Amount</th>
                     <th class="col-num">%</th>
@@ -624,24 +607,20 @@ class ProjectAdmin(admin.ModelAdmin):
         </table>
         <div class="legend">
             <div class="legend-item"><span class="legend-color" style="background:#447e9b;"></span> Revenue = Cumulative work done (invoice gross amount)</div>
-            <div class="legend-item"><span class="legend-color" style="background:#ed6c02;"></span> Direct Expenses = Costs linked to BOQ item + Payroll allocations</div>
-            <div class="legend-item"><span class="legend-color" style="background:#2e7d32;"></span> Profit = Revenue − Expenses</div>
+            <div class="legend-item"><span class="legend-color" style="background:#ed6c02;"></span> Direct Expenses = Costs linked to BOQ item + Manpower Cost allocations</div>
+            <div class="legend-item"><span class="legend-color" style="background:#2e7d32;"></span> Profit = Revenue minus Expenses</div>
             <div class="legend-item"><span class="legend-color" style="background:#d32f2f;"></span> Loss = Negative profit (expenses exceed revenue)</div>
         </div>
-        <div id="page-footer">{"<img src='" + footer_img_url + "' alt='Footer'>" if footer_img_url else ""}</div>
         <script>window.onload = function() {{ window.print(); }}</script>
     </body></html>"""
         return HttpResponse(html)
-
-
 
     def analytics_view(self, request, pk):
         proj = get_object_or_404(Project, pk=pk)
         invoices = Invoice.objects.filter(project=proj).order_by('inv_number')
         boq_items = BOQItem.objects.filter(project=proj).order_by('item_number')
         company = CompanyProfile.objects.first()
-        header_img_url = company.letter_header.url if company and company.letter_header else ''
-        footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
+        logo_url = company.logo.url if company and company.logo else ''
 
         inv_rows = ""
         for inv in invoices:
@@ -686,16 +665,11 @@ class ProjectAdmin(admin.ModelAdmin):
         html = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
-    @page {{ size: A4 portrait; margin: 18mm 12mm 18mm 12mm;
-        @top-center {{ content: element(page-header); vertical-align: top; }}
-        @bottom-center {{ content: element(page-footer); vertical-align: bottom; }}
-    }}
-    #page-header {{ position: running(page-header); width: 100%; text-align: center; margin-bottom: 8px; }}
-    #page-header img {{ max-height: 120px; width: 100%; object-fit: contain; }}
-    #page-footer {{ position: running(page-footer); width: 100%; text-align: center; margin-top: 8px; }}
-    #page-footer img {{ max-height: 90px; width: 100%; object-fit: contain; }}
+    @page {{ size: A4 portrait; margin: 10mm; }}
     * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; color: #222; padding: 20px; }}
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; color: #222; padding: 10px; }}
+    .logo-bar {{ text-align: right; margin-bottom: 6px; }}
+    .logo-bar img {{ max-height: 60px; max-width: 180px; object-fit: contain; }}
     .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
     .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
     .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 20px; line-height: 1.6; font-size: 10px; }}
@@ -720,7 +694,7 @@ class ProjectAdmin(admin.ModelAdmin):
     .panel-row {{ display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 5px; }}
     .panel-row b {{ color: #333; }}
 </style></head><body>
-    <div id="page-header">{"<img src='" + header_img_url + "' alt='Header'>" if header_img_url else ""}</div>
+    {self._logo_bar(logo_url)}
     <div class="report-title">PROJECT ANALYTICS REPORT</div>
     <div class="report-subtitle">{proj.project_id_code} — {proj.project_name}</div>
     <div class="meta-box">
@@ -805,16 +779,13 @@ class ProjectAdmin(admin.ModelAdmin):
             </tr>
         </tfoot>
     </table>
-    <div id="page-footer">{"<img src='" + footer_img_url + "' alt='Footer'>" if footer_img_url else ""}</div>
 </body></html>"""
-
         return HttpResponse(html)
 
     def get_urls(self):
         urls = super().get_urls()
         custom = [
             path('<int:pk>/analytics/', self.admin_site.admin_view(self.analytics_view), name='project_analytics'),
-
             path('<int:pk>/cost-profit/', self.admin_site.admin_view(self.cost_profit_view), name='project_cost_profit'),
         ]
         return custom + urls
@@ -966,7 +937,6 @@ class InvoiceAdmin(admin.ModelAdmin):
             val = obj.current_retention_a_recovery
             return format_html("<b style='color:green;'>{:,.2f}</b>", val)
         return "0.00"
-
     ui_retention_a_recovery.short_description = "Ret A Recovery"
 
     def ui_retention_b_recovery(self, obj):
@@ -974,7 +944,6 @@ class InvoiceAdmin(admin.ModelAdmin):
             val = obj.current_retention_b_recovery
             return format_html("<b style='color:green;'>{:,.2f}</b>", val)
         return "0.00"
-
     ui_retention_b_recovery.short_description = "Ret B Recovery"
 
     def fmt_inv_str(self, obj):
@@ -995,6 +964,7 @@ class InvoiceAdmin(admin.ModelAdmin):
     def print_view(self, request, pk):
         inv = get_object_or_404(Invoice, pk=pk)
         company = CompanyProfile.objects.first()
+        logo_url = company.logo.url if company and company.logo else ''
         header_title = "PROFORMA INVOICE" if inv.inv_type == "P" else "TAX INVOICE"
 
         all_boq = BOQItem.objects.filter(project=inv.project).order_by('item_number')
@@ -1091,9 +1061,7 @@ class InvoiceAdmin(admin.ModelAdmin):
             </tr>
         """
 
-        header_img_url = company.letter_header.url if company and company.letter_header else ''
-        footer_img_url = company.letter_footer.url if company and company.letter_footer else ''
-        logo_url = company.logo.url if company and company.logo else ''
+        logo_bar_html = f'<div style="text-align:right; margin-bottom:8px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>' if logo_url else ''
 
         html = f"""<!DOCTYPE html>
     <html>
@@ -1102,18 +1070,10 @@ class InvoiceAdmin(admin.ModelAdmin):
     <style>
         @page {{
             size: A4 landscape;
-            margin: 18mm 10mm 18mm 10mm;
-            @top-center {{ content: element(page-header); vertical-align: top; }}
-            @bottom-center {{ content: element(page-footer); vertical-align: bottom; }}
+            margin: 10mm;
         }}
-        #page-header {{ position: running(page-header); width: 100%; text-align: center; margin-bottom: 8px; }}
-        #page-header img {{ max-height: 130px; width: 100%; object-fit: contain; }}
-        #page-footer {{ position: running(page-footer); width: 100%; text-align: center; margin-top: 8px; }}
-        #page-footer img {{ max-height: 100px; width: 100%; object-fit: contain; }}
         * {{ box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; margin: 0; padding: 0; }}
-        body {{ font-family: "Segoe UI", Arial, Helvetica, sans-serif; font-size: 8.5px; line-height: 1.3; color: #222; width: 100%; }}
-        .watermark {{ position: fixed; top: 10%; left: 50%; transform: translate(-50%, -50%); width: 550px; opacity: 0.0; z-index: -1; pointer-events: none; }}
-        .watermark img {{ width: 100%; }}
+        body {{ font-family: "Segoe UI", Arial, Helvetica, sans-serif; font-size: 8.5px; line-height: 1.3; color: #222; width: 100%; padding: 10px; }}
         .invoice-title {{ font-size: 15px; font-weight: bold; text-align: center; margin: 8px 0 12px 0; color: #000080; letter-spacing: 1px; }}
         .invoice-meta {{ margin-bottom: 10px; }}
         .invoice-meta-row {{ font-size: 11px; font-weight: bold; margin-bottom: 4px; }}
@@ -1146,20 +1106,10 @@ class InvoiceAdmin(admin.ModelAdmin):
         .red-text {{ color: #000080; font-weight: bold; font-size: 1.4em; }}
         .bank-content {{ font-family: "Courier New", monospace; font-size: 10px; font-weight: bold; color: #000080; line-height: 1.4; }}
         .page-break-avoid {{ page-break-inside: avoid; }}
-        @media print {{
-            #page-header {{ position: fixed; top: 0; left: 0; right: 0; }}
-            #page-footer {{ position: fixed; bottom: 0; left: 0; right: 0; }}
-            body {{ padding-top: 140px; padding-bottom: 110px; }}
-        }}
     </style>
     </head>
     <body>
-        <div class="watermark">
-            {"<img src='" + logo_url + "' alt='Watermark'>" if logo_url else ""}
-        </div>
-        <div id="page-header">
-            {"<img src='" + header_img_url + "' alt='Header'>" if header_img_url else ""}
-        </div>
+        {logo_bar_html}
         <div class="invoice-title">{header_title}</div>
         <div class="invoice-meta">
             <div class="invoice-meta-row">Invoice Number: {inv}</div>
@@ -1220,9 +1170,6 @@ class InvoiceAdmin(admin.ModelAdmin):
                 <div class="summary-row border-top red-text"><span>Payable Amount:</span><span>{inv.total_after_vat:,.2f}</span></div>
             </div>
         </div>
-        <div id="page-footer">
-            {"<img src='" + footer_img_url + "' alt='Footer'>" if footer_img_url else ""}
-        </div>
         <script>window.onload = function() {{ window.print(); }}</script>
     </body>
     </html>"""
@@ -1264,6 +1211,7 @@ class ExpenseCategoryAdmin(admin.ModelAdmin):
         data = [{'id': item['id'], 'text': item['name']} for item in items]
         return JsonResponse(data, safe=False)
 
+
 @admin.register(Expense)
 class ExpenseAdmin(admin.ModelAdmin):
     list_display = ["date", "project", "category", "sub_category", "fmt_amount", "boq_item", "is_allocated"]
@@ -1276,28 +1224,21 @@ class ExpenseAdmin(admin.ModelAdmin):
 
     def fmt_amount(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.amount:,.2f}</div>')
-
     fmt_amount.short_description = "Amount"
 
     def get_form(self, request, obj=None, **kwargs):
         form = super().get_form(request, obj, **kwargs)
-
-        # Filter sub_category by selected category (on both add and change)
         if obj and obj.category:
             form.base_fields['sub_category'].queryset = SubExpense.objects.filter(parent=obj.category)
         else:
             form.base_fields['sub_category'].queryset = SubExpense.objects.none()
-
-        # Filter boq_item by selected project (on both add and change)
         if obj and obj.project:
             form.base_fields['boq_item'].queryset = BOQItem.objects.filter(project=obj.project)
         else:
             form.base_fields['boq_item'].queryset = BOQItem.objects.none()
-
         return form
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        # This runs AFTER the form is instantiated, so we use it for change form
         if db_field.name == "boq_item":
             if request.resolver_match and request.resolver_match.kwargs.get('object_id'):
                 obj = self.get_object(request, request.resolver_match.kwargs['object_id'])
@@ -1307,7 +1248,6 @@ class ExpenseAdmin(admin.ModelAdmin):
                     kwargs["queryset"] = BOQItem.objects.none()
             else:
                 kwargs["queryset"] = BOQItem.objects.none()
-
         elif db_field.name == "sub_category":
             if request.resolver_match and request.resolver_match.kwargs.get('object_id'):
                 obj = self.get_object(request, request.resolver_match.kwargs['object_id'])
@@ -1317,22 +1257,171 @@ class ExpenseAdmin(admin.ModelAdmin):
                     kwargs["queryset"] = SubExpense.objects.none()
             else:
                 kwargs["queryset"] = SubExpense.objects.none()
-
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
 # =============================================================================
-# EMPLOYEE & PAYROLL ADMIN
+# PAYROLL ALLOCATION LOGIC
 # =============================================================================
+
+def calculate_monthly_boq_progress(project, month):
+    from django.db.models import Sum
+    month_invoices = Invoice.objects.filter(
+        project=project,
+        date__year=month.year,
+        date__month=month.month,
+        is_advance_invoice=False
+    )
+    boq_progress = {}
+    total_monthly_work = Decimal("0")
+    for boq in project.boq_items.all():
+        inv_items = InvoiceItem.objects.filter(boq_item=boq, invoice__in=month_invoices)
+        monthly_qty = inv_items.aggregate(total=Sum('current_qty'))['total'] or Decimal("0")
+        monthly_amount = inv_items.aggregate(total=Sum('gross_amount'))['total'] or Decimal("0")
+        boq_progress[boq.id] = {
+            'boq_item': boq,
+            'monthly_qty': monthly_qty,
+            'monthly_amount': monthly_amount,
+        }
+        total_monthly_work += monthly_amount
+    for boq_id, data in boq_progress.items():
+        if total_monthly_work > 0:
+            data['progress_pct'] = (data['monthly_amount'] / total_monthly_work * 100)
+        else:
+            data['progress_pct'] = Decimal("0")
+    return boq_progress, total_monthly_work
+
+
+def allocate_payroll_with_progress(payroll_record):
+    from django.db.models import Sum
+    employee = payroll_record.employee
+    month = payroll_record.month
+    if month.month == 12:
+        next_month = date(month.year + 1, 1, 1)
+    else:
+        next_month = date(month.year, month.month + 1, 1)
+    days_in_month = (next_month - month).days
+    cost_centers = payroll_record.cost_centers.all()
+
+    if cost_centers.exists():
+        total_allocated = Decimal("0")
+        for cc in cost_centers:
+            project = cc.project
+            prorated_amount = cc.prorated_salary
+            boq_progress, total_monthly_work = calculate_monthly_boq_progress(project, month)
+            if total_monthly_work > 0:
+                for boq_id, data in boq_progress.items():
+                    allocation_amount = money(prorated_amount * data['progress_pct'] / 100)
+                    PayrollAllocation.objects.create(
+                        payroll_record=payroll_record, project=project, boq_item=data['boq_item'],
+                        salary_allocated=allocation_amount, admin_cost_allocated=Decimal("0"),
+                        total_allocated=allocation_amount, project_work_done_pct=data['progress_pct'],
+                        boq_item_work_done_pct=data['progress_pct'],
+                    )
+                    total_allocated += allocation_amount
+            else:
+                boq_items = project.boq_items.all()
+                if boq_items.exists():
+                    equal_amount = money(prorated_amount / boq_items.count())
+                    for boq in boq_items:
+                        PayrollAllocation.objects.create(
+                            payroll_record=payroll_record, project=project, boq_item=boq,
+                            salary_allocated=equal_amount, admin_cost_allocated=Decimal("0"),
+                            total_allocated=equal_amount, project_work_done_pct=Decimal("0"),
+                            boq_item_work_done_pct=Decimal("0"),
+                        )
+                        total_allocated += equal_amount
+
+        assigned_days = sum(cc.days_count for cc in cost_centers)
+        remaining_days = days_in_month - assigned_days
+        if remaining_days > 0 and employee.project:
+            remaining_ratio = Decimal(remaining_days) / Decimal(days_in_month)
+            remaining_amount = money(payroll_record.net_salary_snap * remaining_ratio)
+            boq_progress, total_monthly_work = calculate_monthly_boq_progress(employee.project, month)
+            if total_monthly_work > 0:
+                for boq_id, data in boq_progress.items():
+                    allocation_amount = money(remaining_amount * data['progress_pct'] / 100)
+                    PayrollAllocation.objects.create(
+                        payroll_record=payroll_record, project=employee.project, boq_item=data['boq_item'],
+                        salary_allocated=allocation_amount, admin_cost_allocated=Decimal("0"),
+                        total_allocated=allocation_amount, project_work_done_pct=data['progress_pct'],
+                        boq_item_work_done_pct=data['progress_pct'],
+                    )
+            else:
+                boq_items = employee.project.boq_items.all()
+                if boq_items.exists():
+                    equal_amount = money(remaining_amount / boq_items.count())
+                    for boq in boq_items:
+                        PayrollAllocation.objects.create(
+                            payroll_record=payroll_record, project=employee.project, boq_item=boq,
+                            salary_allocated=equal_amount, admin_cost_allocated=Decimal("0"),
+                            total_allocated=equal_amount, project_work_done_pct=Decimal("0"),
+                            boq_item_work_done_pct=Decimal("0"),
+                        )
+    else:
+        if employee.project:
+            project = employee.project
+            boq_progress, total_monthly_work = calculate_monthly_boq_progress(project, month)
+            if total_monthly_work > 0:
+                for boq_id, data in boq_progress.items():
+                    allocation_amount = money(payroll_record.net_salary_snap * data['progress_pct'] / 100)
+                    PayrollAllocation.objects.create(
+                        payroll_record=payroll_record, project=project, boq_item=data['boq_item'],
+                        salary_allocated=allocation_amount, admin_cost_allocated=Decimal("0"),
+                        total_allocated=allocation_amount, project_work_done_pct=data['progress_pct'],
+                        boq_item_work_done_pct=data['progress_pct'],
+                    )
+            else:
+                boq_items = project.boq_items.all()
+                if boq_items.exists():
+                    equal_amount = money(payroll_record.net_salary_snap / boq_items.count())
+                    for boq in boq_items:
+                        PayrollAllocation.objects.create(
+                            payroll_record=payroll_record, project=project, boq_item=boq,
+                            salary_allocated=equal_amount, admin_cost_allocated=Decimal("0"),
+                            total_allocated=equal_amount, project_work_done_pct=Decimal("0"),
+                            boq_item_work_done_pct=Decimal("0"),
+                        )
+        else:
+            active_projects = Project.objects.filter(
+                invoices__date__year=month.year,
+                invoices__date__month=month.month
+            ).distinct()
+            if active_projects.exists():
+                equal_amount = money(payroll_record.net_salary_snap / active_projects.count())
+                for proj in active_projects:
+                    boq_items = proj.boq_items.all()
+                    if boq_items.exists():
+                        boq_equal = money(equal_amount / boq_items.count())
+                        for boq in boq_items:
+                            PayrollAllocation.objects.create(
+                                payroll_record=payroll_record, project=proj, boq_item=boq,
+                                salary_allocated=boq_equal, admin_cost_allocated=Decimal("0"),
+                                total_allocated=boq_equal, project_work_done_pct=Decimal("0"),
+                                boq_item_work_done_pct=Decimal("0"),
+                            )
+
+    payroll_record.is_allocated = True
+    payroll_record.save()
+    return True
+
+
+class EmployeeTransferInline(admin.TabularInline):
+    model = EmployeeTransfer
+    extra = 0
+    fields = ["to_project", "from_date", "to_date", "days_count", "notes"]
+    readonly_fields = ["days_count"]
+
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
     list_display = [
         "employee_id", "name", "employee_type", "payment_type",
-        "cost_center", "fmt_total_salary", "fmt_daily_cost", "is_active"
+        "cost_center", "fmt_total_salary", "fmt_daily_cost", "is_active", "transfer_status"
     ]
     list_filter = ["employee_type", "payment_type", "is_head_office", "is_active", "project"]
     search_fields = ["name", "employee_id"]
+    inlines = [EmployeeTransferInline]
     fieldsets = (
         ("Employee Information", {
             "fields": (
@@ -1371,6 +1460,33 @@ class EmployeeAdmin(admin.ModelAdmin):
         return mark_safe(f'<div style="text-align:right;color:#2e7d32;font-weight:bold;">{obj.daily_cost:,.2f}</div>')
     fmt_daily_cost.short_description = "Daily Cost"
 
+    def transfer_status(self, obj):
+        active_transfers = obj.transfers.filter(
+            from_date__lte=date.today(),
+            to_date__gte=date.today()
+        ).select_related('to_project')
+        if active_transfers.exists():
+            t = active_transfers.first()
+            return mark_safe(f'<b style="color:#ed6c02;">to {t.to_project.project_id_code}</b>')
+        return mark_safe('<span style="color:#999;">—</span>')
+    transfer_status.short_description = "Transfer"
+
+    def changelist_view(self, request, extra_context=None):
+        from django.db.models import Q
+        complete_projects = Project.objects.filter(is_boq_complete=True)
+        for proj in complete_projects:
+            workers = Employee.objects.filter(project=proj, is_active=True)
+            if workers.exists():
+                messages.warning(
+                    request,
+                    mark_safe(
+                        f"<b>PROJECT COMPLETE:</b> {proj.project_id_code} has {workers.count()} active worker(s). "
+                        f"<a href='{reverse('admin:sales_employee_changelist')}?project__id__exact={proj.id}' "
+                        f"style='color:#d32f2f; text-decoration:underline; font-weight:bold;'>Transfer Workers</a>"
+                    )
+                )
+        return super().changelist_view(request, extra_context)
+
 
 class PayrollAllocationInline(admin.TabularInline):
     model = PayrollAllocation
@@ -1382,9 +1498,16 @@ class PayrollAllocationInline(admin.TabularInline):
     can_delete = False
 
 
+class PayrollCostCenterInline(admin.TabularInline):
+    model = PayrollCostCenter
+    extra = 0
+    fields = ["project", "from_date", "to_date", "days_count", "prorated_salary", "notes"]
+    readonly_fields = ["days_count", "prorated_salary"]
+
+
 @admin.register(PayrollRecord)
 class PayrollRecordAdmin(admin.ModelAdmin):
-    inlines = [PayrollAllocationInline]
+    inlines = [PayrollCostCenterInline, PayrollAllocationInline]
     list_display = [
         "employee", "month", "fmt_total_salary", "fmt_overtime", "fmt_absence",
         "fmt_advance", "fmt_other_ded", "fmt_net_salary", "allocation_status"
@@ -1435,7 +1558,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
             if rec.is_allocated:
                 skipped += 1
                 continue
-            if allocate_payroll(rec):
+            if allocate_payroll_with_progress(rec):
                 done += 1
             else:
                 skipped += 1
@@ -1445,7 +1568,6 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         today = date.today()
         first_day = today.replace(day=1)
         last_month = (first_day - timedelta(days=1)).replace(day=1)
-
         unallocated = PayrollRecord.objects.filter(month=last_month, is_allocated=False).count()
         if unallocated > 0:
             messages.warning(
@@ -1453,7 +1575,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
                 mark_safe(
                     f"<b>PAYROLL ALERT:</b> {unallocated} record(s) for <b>{last_month.strftime('%b %Y')}</b> "
                     f"are not yet allocated to projects. "
-                    f"<a href='allocate/' style='color:#d32f2f; text-decoration:underline; font-weight:bold;'>Allocate Now →</a>"
+                    f"<a href='allocate/' style='color:#d32f2f; text-decoration:underline; font-weight:bold;'>Allocate Now</a>"
                 )
             )
         return super().changelist_view(request, extra_context)
@@ -1472,7 +1594,6 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         today = date.today()
         first_day = today.replace(day=1)
         last_month = (first_day - timedelta(days=1)).replace(day=1)
-
         unallocated = PayrollRecord.objects.filter(
             month=last_month, is_allocated=False
         ).select_related("employee")
@@ -1483,7 +1604,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
                 from .models import allocate_payroll
                 done = 0
                 for rec in unallocated:
-                    if allocate_payroll(rec):
+                    if allocate_payroll_with_progress(rec):
                         done += 1
                 messages.success(request, f"{done} payroll record(s) allocated successfully.")
                 return redirect("..")
@@ -1541,8 +1662,8 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         </div>
         <form method="post">
             <div class="actions">
-                <button type="submit" name="action" value="yes" class="btn btn-yes">YES — Allocate Now</button>
-                <button type="submit" name="action" value="no" class="btn btn-no">NO — Remind Me Tomorrow</button>
+                <button type="submit" name="action" value="yes" class="btn btn-yes">YES - Allocate Now</button>
+                <button type="submit" name="action" value="no" class="btn btn-no">NO - Remind Me Tomorrow</button>
             </div>
         </form>
     </div>
@@ -1661,6 +1782,10 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         return HttpResponse(html)
 
     def _payroll_report_wrapper(self, title, headers, rows, totals, payment_method):
+        company = CompanyProfile.objects.first()
+        logo_url = company.logo.url if company and company.logo else ''
+        logo_bar_html = f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>' if logo_url else ''
+
         header_cells = "".join(f"<th>{h}</th>" for h in headers)
         total_row = ""
         if "basic" in totals:
@@ -1697,7 +1822,9 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
-    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; padding: 20px; }}
+    @page {{ size: A4 portrait; margin: 10mm; }}
+    * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; padding: 10px; }}
     .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
     .report-sub {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
     .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 20px; line-height: 1.6; }}
@@ -1708,6 +1835,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
     tr:nth-child(even) {{ background: #fafafa; }}
     .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; }}
 </style></head><body>
+    {logo_bar_html}
     <div class="report-title">{title}</div>
     <div class="report-sub">Payment Method: {payment_method} | Generated: {date.today().strftime('%d-%b-%Y')}</div>
     <div class="meta-box">
