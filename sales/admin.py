@@ -1488,8 +1488,17 @@ class PayrollAllocationInline(admin.TabularInline):
 class PayrollCostCenterInline(admin.TabularInline):
     model = PayrollCostCenter
     extra = 0
-    fields = ["project", "from_date", "to_date", "days_count", "prorated_salary", "notes"]
-    readonly_fields = ["days_count", "prorated_salary"]
+    fields = ["project", "from_date", "to_date", "days_count", "overtime_hours", "prorated_salary", "fmt_overtime_amount", "notes"]
+    readonly_fields = ["days_count", "prorated_salary", "fmt_overtime_amount"]
+
+    def fmt_overtime_amount(self, obj):
+        if obj.overtime_hours and obj.overtime_hours > 0 and obj.payroll_record and obj.payroll_record.employee:
+            rate = obj.payroll_record.employee.hourly_rate_ot
+            if rate > 0:
+                amt = money(obj.overtime_hours * rate)
+                return mark_safe(f'<div style="text-align:right;font-weight:bold;">{amt:,.2f}</div>')
+        return mark_safe('<span style="color:#999;">—</span>')
+    fmt_overtime_amount.short_description = "OT Amount"
 
 
 @admin.register(PayrollRecord)
@@ -1510,6 +1519,13 @@ class PayrollRecordAdmin(admin.ModelAdmin):
 
     def fmt_overtime(self, obj):
         if obj.employee.employee_type == 'Site':
+            # Total OT hours = record OT + sum of cost center OT hours
+            cc_ot_hours = obj.cost_centers.aggregate(total=Sum('overtime_hours'))['total'] or Decimal("0")
+            total_ot_hours = obj.overtime_hours + cc_ot_hours
+            # Calculate OT amount from total hours
+            if total_ot_hours > 0 and obj.employee.hourly_rate_ot > 0:
+                total_ot_amount = money(total_ot_hours * obj.employee.hourly_rate_ot)
+                return mark_safe(f'<div style="text-align:right;">{total_ot_hours}h / {total_ot_amount:,.2f}</div>')
             return mark_safe(f'<div style="text-align:right;">{obj.overtime_hours}h / {obj.overtime_amount_snap:,.2f}</div>')
         return mark_safe('<span style="color:#999;">—</span>')
     fmt_overtime.short_description = "OT (Hrs/Amt)"

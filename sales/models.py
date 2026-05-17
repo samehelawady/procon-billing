@@ -581,6 +581,10 @@ class EmployeeTransfer(models.Model):
     )
     from_date = models.DateField(verbose_name="From Date")
     to_date = models.DateField(verbose_name="To Date")
+    overtime_hours = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0,
+        verbose_name="Overtime Hours"
+    )
     notes = models.TextField(blank=True, verbose_name="Notes")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -701,6 +705,10 @@ class PayrollCostCenter(models.Model):
     )
     from_date = models.DateField(verbose_name="From Date")
     to_date = models.DateField(verbose_name="To Date")
+    overtime_hours = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0,
+        verbose_name="Overtime Hours"
+    )
     notes = models.TextField(blank=True, verbose_name="Notes")
 
     class Meta:
