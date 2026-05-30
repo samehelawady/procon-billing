@@ -22,9 +22,27 @@ from django.shortcuts import redirect
 from django import forms
 
 # --- BRANDING ---
-admin.site.site_header = "Procon General Contracting LLC"
-admin.site.site_title = "Billing & Project Management"
-admin.site.index_title = "Billing & Project Management Portal"
+from django.contrib import admin
+from django.contrib.admin import AdminSite, sites as admin_sites
+
+class DynamicAdminSite(AdminSite):
+    def each_context(self, request):
+        context = super().each_context(request)
+        from .models import CompanyProfile
+        company = CompanyProfile.get_active()
+        if company:
+            context['site_header'] = company.company_name
+            context['site_title'] = f"{company.company_name} - Billing & Project Management"
+            context['index_title'] = "Billing & Project Management Portal"
+        else:
+            context['site_header'] = "Billing & Project Management"
+            context['site_title'] = "Billing & Project Management"
+            context['index_title'] = "Billing & Project Management Portal"
+        return context
+
+# Install the custom admin site BEFORE any @admin.register decorators run
+admin.site = DynamicAdminSite(name="admin")
+admin_sites.site = admin.site
 
 
 @admin.register(Client)
@@ -112,7 +130,7 @@ class ClientAdmin(admin.ModelAdmin):
 
     def statement_view(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
         invoices = Invoice.objects.filter(
             project__client=client, inv_type='T'
@@ -167,7 +185,7 @@ class ClientAdmin(admin.ModelAdmin):
 
     def outstanding_view(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
         invoices = Invoice.objects.filter(
             project__client=client
@@ -226,7 +244,7 @@ class ClientAdmin(admin.ModelAdmin):
 
     def progress_view(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
         projects = client.projects.all().prefetch_related('invoices', 'boq_items')
 
@@ -357,9 +375,15 @@ class ExpenseInline(admin.TabularInline):
 
 @admin.register(CompanyProfile)
 class CompanyProfileAdmin(admin.ModelAdmin):
-    list_display = ["company_name", "trn_number", "phone", "bank"]
+    list_display = ["company_name", "trn_number", "phone", "bank", "is_active", "logo_preview"]
     fields = ["company_name", "logo", "letter_header", "letter_footer",
-              "trn_number", "address", "bank", "phone", "email", "website"]
+              "trn_number", "address", "bank", "phone", "email", "website", "is_active"]
+
+    def logo_preview(self, obj):
+        if obj.logo:
+            return format_html('<img src="{}" style="max-height:40px; max-width:120px;" />', obj.logo.url)
+        return "—"
+    logo_preview.short_description = "Logo Preview"
 
 
 # =============================================================================
@@ -447,7 +471,7 @@ class ProjectAdmin(admin.ModelAdmin):
 
     def cost_profit_view(self, request, pk):
         proj = get_object_or_404(Project, pk=pk)
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
 
         latest_inv = Invoice.objects.filter(
@@ -706,7 +730,7 @@ class ProjectAdmin(admin.ModelAdmin):
         proj = get_object_or_404(Project, pk=pk)
         invoices = Invoice.objects.filter(project=proj).order_by('inv_number')
         boq_items = BOQItem.objects.filter(project=proj).order_by('item_number')
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
 
         inv_rows = ""
@@ -1078,7 +1102,7 @@ class InvoiceAdmin(admin.ModelAdmin):
 
     def print_view(self, request, pk):
         inv = get_object_or_404(Invoice, pk=pk)
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
         header_title = "PROFORMA INVOICE" if inv.inv_type == "P" else "TAX INVOICE"
 
@@ -1737,7 +1761,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
     def timesheet_view(self, request, pk):
         payroll = get_object_or_404(PayrollRecord, pk=pk)
         emp = payroll.employee
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
 
         # Month is from the payroll record itself
@@ -2153,7 +2177,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         return HttpResponse(html)
 
     def _payroll_report_wrapper(self, title, headers, rows, totals, payment_method):
-        company = CompanyProfile.objects.first()
+        company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
         logo_bar_html = f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>' if logo_url else ''
 

@@ -45,7 +45,7 @@ class Client(models.Model):
 class CompanyProfile(models.Model):
     class Meta:
         verbose_name = "Company Profile"
-        verbose_name_plural = "Company Profile"
+        verbose_name_plural = "Company Profiles"
 
     company_name = models.CharField(max_length=255)
     logo = models.ImageField(upload_to="company_logos/", blank=True, null=True)
@@ -67,9 +67,25 @@ class CompanyProfile(models.Model):
     phone = models.CharField(max_length=100, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
     website = models.CharField(max_length=255, blank=True, null=True)
+    is_active = models.BooleanField(
+        default=False,
+        help_text="Check this to make this the active company for branding, reports and the admin header."
+    )
 
     def __str__(self):
         return self.company_name
+
+    @classmethod
+    def get_active(cls):
+        """Return the currently active company profile."""
+        active = cls.objects.filter(is_active=True).first()
+        return active if active else cls.objects.first()
+
+    def save(self, *args, **kwargs):
+        # Ensure only one company is active at a time
+        if self.is_active:
+            type(self).objects.filter(is_active=True).exclude(pk=self.pk).update(is_active=False)
+        super().save(*args, **kwargs)
 
 
 class Project(models.Model):
