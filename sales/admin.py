@@ -23,7 +23,7 @@ from django import forms
 
 # --- BRANDING ---
 admin.site.site_header = "Procon General Contracting LLC"
-admin.site.site_title = "Procon Billing"
+admin.site.site_title = "Billing & Project Management"
 admin.site.index_title = "Billing & Project Management Portal"
 
 
