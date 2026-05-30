@@ -565,6 +565,69 @@ class Employee(models.Model):
     def daily_rate(self):
         return money(self.total_salary / Decimal("30"))
 
+    @property
+    def eos_amount(self):
+        """
+        End of Service (EOS) benefits.
+        - Less than 1 year of service: 0
+        - Years 1 to 3: 21 days of basic salary per completed year
+        - Year 4 onwards: 30 days of basic salary per completed year
+        - Current partial year is prorated by days attended (excluding absence).
+        """
+        if not self.date_joined or not self.is_active:
+            return Decimal("0.00")
+
+        today = date.today()
+
+        # Completed full years of service
+        completed_years = today.year - self.date_joined.year
+        if (today.month, today.day) < (self.date_joined.month, self.date_joined.day):
+            completed_years -= 1
+
+        if completed_years < 1:
+            return Decimal("0.00")
+
+        daily_basic = self.basic_salary / Decimal("30")
+        total_eos = Decimal("0")
+
+        # Full completed years
+        for year in range(1, completed_years + 1):
+            if year <= 3:
+                total_eos += daily_basic * Decimal("21")
+            else:
+                total_eos += daily_basic * Decimal("30")
+
+        # Current partial year (since last anniversary)
+        try:
+            last_anniversary = date(today.year, self.date_joined.month, self.date_joined.day)
+        except ValueError:
+            last_anniversary = date(today.year, self.date_joined.month, 28)
+
+        if last_anniversary > today:
+            try:
+                last_anniversary = date(today.year - 1, self.date_joined.month, self.date_joined.day)
+            except ValueError:
+                last_anniversary = date(today.year - 1, self.date_joined.month, 28)
+
+        days_in_current_year = (today - last_anniversary).days
+
+        if days_in_current_year > 0:
+            year_num = completed_years + 1
+            if year_num <= 3:
+                entitlement = daily_basic * Decimal("21")
+            else:
+                entitlement = daily_basic * Decimal("30")
+
+            # Sum absences recorded in payroll records during the current service year
+            year_absence = self.payroll_records.filter(
+                month__gte=last_anniversary,
+                month__lte=today
+            ).aggregate(total=Sum('days_absent'))['total'] or Decimal("0")
+
+            attended_days = max(0, days_in_current_year - int(year_absence))
+            total_eos += entitlement * Decimal(attended_days) / Decimal(days_in_current_year)
+
+        return money(total_eos)
 
 # =============================================================================
 # EMPLOYEE TRANSFER MODEL

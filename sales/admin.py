@@ -1426,13 +1426,13 @@ class EmployeeAdmin(admin.ModelAdmin):
     form = EmployeeAdminForm
     list_display = [
         "employee_id", "name", "employee_type", "payment_type",
-        "cost_center", "fmt_total_salary", "fmt_total_package",
+        "cost_center", "fmt_total_salary", "fmt_total_package","fmt_eos",
         "fmt_daily_cost", "fmt_hourly_rate", "fmt_bank_info", "is_active", "transfer_status"
     ]
     list_filter = ["employee_type", "payment_type", "is_head_office", "is_active", "project"]
     search_fields = ["name", "employee_id"]
     inlines = [EmployeeTransferInline]
-    readonly_fields = ["total_salary", "monthly_admin_cost", "daily_cost", "hourly_rate_ot"]
+    readonly_fields = ["total_salary", "monthly_admin_cost", "daily_cost", "hourly_rate_ot","eos_amount"]
     fieldsets = (
         ("Employee Information", {
             "fields": (
@@ -1459,8 +1459,10 @@ class EmployeeAdmin(admin.ModelAdmin):
             "fields": (
                 ("total_salary", "monthly_admin_cost"),
                 ("daily_cost", "hourly_rate_ot"),
+                ("eos_amount",),
             ),
             "description": "Daily Cost = (Total Salary + Admin Cost) / 30. Hourly OT Rate = Total Salary / 30 / 8 (Site workers only)."
+                           "EOS = End of Service benefits (21 days/years 1-3, 30 days/year 4+)."
         }),
         ("Bank Details", {
             "fields": (
@@ -1508,6 +1510,18 @@ class EmployeeAdmin(admin.ModelAdmin):
         return mark_safe('<span style="color:#999;">—</span>')
 
     fmt_hourly_rate.short_description = "Hourly Rate"
+
+
+    def fmt_eos(self, obj):
+        val = obj.eos_amount
+        if val > 0:
+            return mark_safe(
+                f'<div style="text-align:right;font-weight:bold;color:#d32f2f;">{val:,.2f}</div>'
+            )
+        return mark_safe('<span style="color:#999;">—</span>')
+
+    fmt_eos.short_description = "EOS"
+
 
     def transfer_status(self, obj):
         active_transfers = obj.transfers.filter(
