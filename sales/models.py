@@ -221,6 +221,80 @@ class Invoice(models.Model):
             return Decimal("0.00")
         return self.items.aggregate(total=Sum('gross_amount'))['total'] or Decimal("0.00")
 
+    # -----------------------------------------------------------------
+    # CERTIFIED WORK — Tax invoices + Approved Proforma only
+    # (excludes Draft Proforma invoices)
+    # -----------------------------------------------------------------
+    @property
+    def certified_work_done(self):
+        """Cumulative certified work: Tax + Approved Proforma only."""
+        if self.is_advance_invoice:
+            return Decimal("0.00")
+        total = InvoiceItem.objects.filter(
+            invoice__project=self.project,
+            invoice__inv_number__lte=self.inv_number,
+            invoice__is_advance_invoice=False,
+        ).filter(
+            Q(invoice__inv_type='T') | Q(invoice__inv_type='P', invoice__status='Approved')
+        ).aggregate(total=Sum('gross_amount'))['total']
+        return money(total)
+
+    @property
+    def previous_certified_work(self):
+        prev = Invoice.objects.filter(
+            project=self.project,
+            inv_number__lt=self.inv_number,
+            is_advance_invoice=False
+        ).filter(
+            Q(inv_type='T') | Q(inv_type='P', status='Approved')
+        ).order_by('-inv_number').first()
+        return prev.certified_work_done if prev else Decimal("0.00")
+
+    @property
+    def current_certified_work(self):
+        if self.is_advance_invoice:
+            return Decimal("0.00")
+        if self.inv_type == 'P' and self.status == 'Draft':
+            return Decimal("0.00")
+        return self.items.aggregate(total=Sum('gross_amount'))['total'] or Decimal("0.00")
+
+    @property
+    def certified_net_invoiced_cumulative(self):
+        if self.is_advance_invoice:
+            return Decimal("0.00")
+        base = money(
+            self.certified_work_done
+            - self.cumulative_advance_recovered
+            - self.cumulative_retention_total
+        )
+        return money(
+            base
+            + self.cumulative_retention_a_recovered
+            + self.cumulative_retention_b_recovered
+        )
+
+    @property
+    def previous_certified_net(self):
+        prev = Invoice.objects.filter(
+            project=self.project,
+            inv_number__lt=self.inv_number,
+            is_advance_invoice=False
+        ).filter(
+            Q(inv_type='T') | Q(inv_type='P', status='Approved')
+        ).order_by('-inv_number').first()
+        return prev.certified_net_invoiced_cumulative if prev else Decimal("0.00")
+
+    @property
+    def current_certified_net_before_vat(self):
+        if self.is_advance_invoice:
+            prev_adv = Invoice.objects.filter(project=self.project, is_advance_invoice=True,
+                                              inv_number__lt=self.inv_number).exists()
+            return Decimal("0.00") if prev_adv else self.project.total_advance_value
+        if self.inv_type == 'P' and self.status == 'Draft':
+            return Decimal("0.00")
+        return money(self.certified_net_invoiced_cumulative - self.previous_certified_net)
+
+
     @property
     def cumulative_advance_recovered(self):
         if self.is_advance_invoice or not self.was_advance_taken:

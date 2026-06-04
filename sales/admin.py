@@ -12,7 +12,7 @@ from .models import (
 )
 from django.urls import reverse
 from decimal import Decimal
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Q
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.urls import path
@@ -138,50 +138,90 @@ class ClientAdmin(admin.ModelAdmin):
         client = get_object_or_404(Client, pk=pk)
         company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
+
+        # ALL invoices for this client (Tax + Proforma, all statuses)
         invoices = Invoice.objects.filter(
-            project__client=client, inv_type='T'
-        ).exclude(status='Paid').select_related('project').order_by('date')
+            project__client=client
+        ).select_related('project').order_by('date', 'inv_number')
 
         rows = ""
-        total_net = Decimal("0")
+        running_balance = Decimal("0")
+        total_debit = Decimal("0")
+        total_credit = Decimal("0")
         total_vat = Decimal("0")
         total_gross = Decimal("0")
 
         for inv in invoices:
-            net = inv.current_net_before_vat
+            # Debit = certified amount (net before VAT)
+            # For Draft Proforma, debit is 0 (not certified)
+            if inv.inv_type == 'P' and inv.status == 'Draft':
+                debit = Decimal("0.00")
+            else:
+                debit = inv.current_certified_net_before_vat
+
+            # Credit = paid amount (net before VAT, only for Paid invoices)
+            credit = debit if inv.status == 'Paid' else Decimal("0.00")
+
             vat = inv.vat_amount
             gross = inv.total_with_vat
-            total_net += net
+
+            running_balance = money(running_balance + debit - credit)
+
+            total_debit += debit
+            total_credit += credit
             total_vat += vat
             total_gross += gross
-            rows += f"""<<tr>
-                <td>{inv.date}</td>
+
+            # Payment date: show date if Paid, otherwise show status
+            payment_info = inv.date.strftime('%d-%b-%Y') if inv.status == 'Paid' else f"— ({inv.status})"
+
+            rows += f"""<tr>
+                <td>{inv.date.strftime('%d-%b-%Y')}</td>
                 <td>{inv}</td>
                 <td>{inv.project.project_name}</td>
+                <td>{inv.get_inv_type_display()}</td>
                 <td>{inv.status}</td>
-                <td class='num'>{net:,.2f}</td>
+                <td class='num' style="color:#000080; font-weight:bold;">{debit:,.2f}</td>
+                <td class='num' style="color:#2e7d32;">{credit:,.2f}</td>
+                <td>{payment_info}</td>
+                <td class='num' style="font-weight:bold;">{running_balance:,.2f}</td>
                 <td class='num'>{vat:,.2f}</td>
                 <td class='num'><b>{gross:,.2f}</b></td>
             </tr>"""
 
         html = self._report_wrapper(f"""
             <div class="report-title">STATEMENT OF ACCOUNT</div>
-            <div class="report-subtitle">Uncollected Tax Invoices</div>
+            <div class="report-subtitle">Client Ledger — All Invoices</div>
             <div class="meta-box">
                 <b>Client:</b> {client.name}<br>
-                <b>TRN:</b> {client.vat_number or 'N/A'}<<br>
+                <b>TRN:</b> {client.vat_number or 'N/A'}<br>
                 <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
             </div>
             <table class="report-table">
                 <thead>
-                    <tr><th>Date</th><th>Invoice #</th><th>Project</th><th>Status</th><th class='num'>Net Amount</th><th class='num'>VAT</th><th class='num'>Total</th></tr>
+                    <tr>
+                        <th>Date</th>
+                        <th>Invoice #</th>
+                        <th>Project</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th class='num'>Debit</th>
+                        <th class='num'>Credit</th>
+                        <th>Payment Date</th>
+                        <th class='num'>Balance</th>
+                        <th class='num'>VAT</th>
+                        <th class='num'>Total w/ VAT</th>
+                    </tr>
                 </thead>
                 <tbody>{rows}</tbody>
                 <tfoot>
                     <tr class="total-row">
-                        <td colspan="4"><b>TOTAL OUTSTANDING</b></td>
-                        <td class='num'>{total_net:,.2f}</td>
-                        <td class='num'>{total_vat:,.2f}</td>
+                        <td colspan="5"><b>TOTALS</b></td>
+                        <td class='num' style="color:#000080;"><b>{total_debit:,.2f}</b></td>
+                        <td class='num' style="color:#2e7d32;"><b>{total_credit:,.2f}</b></td>
+                        <td></td>
+                        <td class='num'><b>{running_balance:,.2f}</b></td>
+                        <td class='num'><b>{total_vat:,.2f}</b></td>
                         <td class='num'><b>{total_gross:,.2f}</b></td>
                     </tr>
                 </tfoot>
@@ -720,25 +760,100 @@ class ProjectAdmin(admin.ModelAdmin):
         company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
 
+        # -----------------------------------------------------------------
+        # CERTIFIED INVOICES: Tax + Approved Proforma only
+        # -----------------------------------------------------------------
+        certified_invoices = invoices.filter(
+            Q(inv_type='T') | Q(inv_type='P', status='Approved')
+        ).exclude(is_advance_invoice=True)
+
+        # DRAFT PROFORMA invoices (shown separately, excluded from totals)
+        draft_proforma_invoices = invoices.filter(
+            inv_type='P', status='Draft'
+        ).exclude(is_advance_invoice=True)
+
+        # Invoice History rows — certified invoices only, with totals
         inv_rows = ""
-        for inv in invoices:
-            inv_rows += f"""<<tr>
+        inv_total_net = Decimal("0")
+        inv_total_vat = Decimal("0")
+        inv_total_gross = Decimal("0")
+        inv_total_payable = Decimal("0")
+
+        for inv in certified_invoices:
+            net = inv.current_certified_net_before_vat
+            vat = inv.vat_amount
+            gross = inv.total_with_vat
+            payable = inv.total_after_vat
+            inv_total_net += net
+            inv_total_vat += vat
+            inv_total_gross += gross
+            inv_total_payable += payable
+            inv_rows += f"""<tr>
                 <td>{inv}</td>
                 <td>{inv.get_inv_type_display()}</td>
                 <td>{inv.status}</td>
                 <td>{inv.date}</td>
-                <td class='num'>{inv.current_net_before_vat:,.2f}</td>
-                <td class='num'>{inv.vat_amount:,.2f}</td>
-                <td class='num'>{inv.total_with_vat:,.2f}</td>
-                <td class='num'>{inv.total_after_vat:,.2f}</td>
+                <td class='num'>{net:,.2f}</td>
+                <td class='num'>{vat:,.2f}</td>
+                <td class='num'>{gross:,.2f}</td>
+                <td class='num'>{payable:,.2f}</td>
             </tr>"""
+
+        # Totals row for certified invoices
+        inv_totals_row = f"""<tr class='total-row'>
+            <td colspan="4"><b>TOTAL CERTIFIED INVOICES</b></td>
+            <td class='num'><b>{inv_total_net:,.2f}</b></td>
+            <td class='num'><b>{inv_total_vat:,.2f}</b></td>
+            <td class='num'><b>{inv_total_gross:,.2f}</b></td>
+            <td class='num'><b>{inv_total_payable:,.2f}</b></td>
+        </tr>"""
+
+        # Draft Proforma rows — shown separately, NOT included in totals
+        draft_rows = ""
+        draft_total_net = Decimal("0")
+        for inv in draft_proforma_invoices:
+            # For draft proforma, show gross amount for reference
+            gross = inv.current_gross_total
+            draft_total_net += gross
+            draft_rows += f"""<tr>
+                <td>{inv}</td>
+                <td>{inv.get_inv_type_display()}</td>
+                <td>{inv.status}</td>
+                <td>{inv.date}</td>
+                <td class='num'>{gross:,.2f}</td>
+                <td class='num'>—</td>
+                <td class='num'>—</td>
+                <td class='num'>—</td>
+            </tr>"""
+
+        draft_totals_row = ""
+        draft_section = ""
+        if draft_rows:
+            draft_totals_row = f"""<tr class='total-row' style="background:#fff3e0;">
+                <td colspan="4"><b>DRAFT PROFORMA TOTAL (Not Certified)</b></td>
+                <td class='num'><b>{draft_total_net:,.2f}</b></td>
+                <td class='num'>—</td>
+                <td class='num'>—</td>
+                <td class='num'>—</td>
+            </tr>"""
+            draft_section = f"""<div class="section-header">Draft Proforma Invoices <span class="draft-badge">NOT CERTIFIED</span></div>
+    <table class="report-table">
+        <thead>
+            <tr><th>Invoice #</th><th>Type</th><th>Status</th><th>Date</th><th class='num'>Gross Amount</th><th class='num'>VAT</th><th class='num'>Total</th><th class='num'>Payable</th></tr>
+        </thead>
+        <tbody>{draft_rows}</tbody>
+        <tfoot>{draft_totals_row}</tfoot>
+    </table>
+    """
+        else:
+            draft_section = '<div class="section-header">Draft Proforma Invoices</div><p style="color:#999; font-size:11px;">No draft proforma invoices.</p>'
 
         boq_rows = ""
         boq_total = Decimal("0")
         for b in boq_items:
             line_total = b.quantity * b.rate
             boq_total += line_total
-            boq_rows += f"""<<tr>
+            boq_rows += f"""<tr>
                 <td>{b.item_number}</td>
                 <td>{b.description[:50]}</td>
                 <td>{b.unit}</td>
@@ -747,18 +862,30 @@ class ProjectAdmin(admin.ModelAdmin):
                 <td class='num'>{line_total:,.2f}</td>
             </tr>"""
 
-        latest = Invoice.objects.filter(project=proj, is_advance_invoice=False).order_by('-inv_number').first()
-        work_done = latest.cumulative_work_done if latest else Decimal("0")
-        ret_a = latest.cumulative_retention_a if latest else Decimal("0")
-        ret_b = latest.cumulative_retention_b if latest else Decimal("0")
-        ret_a_rec = latest.cumulative_retention_a_recovered if latest else Decimal("0")
-        ret_b_rec = latest.cumulative_retention_b_recovered if latest else Decimal("0")
-        adv_rec = latest.cumulative_advance_recovered if latest else Decimal("0")
-        net_inv = latest.net_total_invoiced_cumulative if latest else Decimal("0")
+        # -----------------------------------------------------------------
+        # CERTIFIED METRICS — latest certified invoice
+        # -----------------------------------------------------------------
+        latest_certified = certified_invoices.order_by('-inv_number').first()
+        certified_work = latest_certified.certified_work_done if latest_certified else Decimal("0")
+        ret_a = latest_certified.cumulative_retention_a if latest_certified else Decimal("0")
+        ret_b = latest_certified.cumulative_retention_b if latest_certified else Decimal("0")
+        ret_a_rec = latest_certified.cumulative_retention_a_recovered if latest_certified else Decimal("0")
+        ret_b_rec = latest_certified.cumulative_retention_b_recovered if latest_certified else Decimal("0")
+        adv_rec = latest_certified.cumulative_advance_recovered if latest_certified else Decimal("0")
+        net_inv = latest_certified.certified_net_invoiced_cumulative if latest_certified else Decimal("0")
 
         po = proj.po_amount
-        progress_pct = (work_done / po * 100) if po > 0 else Decimal("0")
-        balance = money(po - work_done)
+        progress_pct = (certified_work / po * 100) if po > 0 else Decimal("0")
+        balance = money(po - certified_work)
+
+        # -----------------------------------------------------------------
+        # CASH COLLECTED — Paid Tax invoices only (net before VAT)
+        # -----------------------------------------------------------------
+        cash_collected = Decimal("0")
+        for inv in invoices.filter(inv_type='T', status='Paid').exclude(is_advance_invoice=True):
+            cash_collected += inv.current_certified_net_before_vat
+
+        balance_cash = money(po - cash_collected)
 
         html = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
@@ -791,6 +918,7 @@ class ProjectAdmin(admin.ModelAdmin):
     .panel-title {{ font-size: 10px; font-weight: bold; color: #000080; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 6px; }}
     .panel-row {{ display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 5px; }}
     .panel-row b {{ color: #333; }}
+    .draft-badge {{ display: inline-block; background: #ed6c02; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; font-weight: bold; }}
 </style></head><body>
     {self._logo_bar(logo_url)}
     <div class="report-title">PROJECT ANALYTICS REPORT</div>
@@ -807,17 +935,27 @@ class ProjectAdmin(admin.ModelAdmin):
             <div class="dash-value">{po:,.2f}</div>
         </div>
         <div class="dash-card">
-            <div class="dash-label">Work Done</div>
-            <div class="dash-value" style="color:#2e7d32;">{work_done:,.2f}</div>
+            <div class="dash-label">Certified Work</div>
+            <div class="dash-value" style="color:#2e7d32;">{certified_work:,.2f}</div>
             <div class="dash-sub">{progress_pct:.1f}% complete</div>
         </div>
         <div class="dash-card">
-            <div class="dash-label">Balance</div>
+            <div class="dash-label">Balance to PO</div>
             <div class="dash-value" style="color:#d32f2f;">{balance:,.2f}</div>
         </div>
         <div class="dash-card">
-            <div class="dash-label">Net Invoiced</div>
+            <div class="dash-label">Net Invoiced (Certified)</div>
             <div class="dash-value">{net_inv:,.2f}</div>
+        </div>
+        <div class="dash-card">
+            <div class="dash-label">Cash Collected</div>
+            <div class="dash-value" style="color:#2e7d32;">{cash_collected:,.2f}</div>
+            <div class="dash-sub">Paid Tax Invoices (excl. VAT)</div>
+        </div>
+        <div class="dash-card">
+            <div class="dash-label">Balance Cash</div>
+            <div class="dash-value" style="color:#d32f2f;">{balance_cash:,.2f}</div>
+            <div class="dash-sub">PO minus Cash Collected</div>
         </div>
         <div class="dash-card">
             <div class="dash-label">Retention Held</div>
@@ -828,6 +966,11 @@ class ProjectAdmin(admin.ModelAdmin):
             <div class="dash-label">Advance Status</div>
             <div class="dash-value">{adv_rec:,.2f}</div>
             <div class="dash-sub">of {proj.total_advance_value:,.2f} recovered</div>
+        </div>
+        <div class="dash-card">
+            <div class="dash-label">Invoices</div>
+            <div class="dash-value">{certified_invoices.count()}</div>
+            <div class="dash-sub">{draft_proforma_invoices.count()} draft proforma</div>
         </div>
     </div>
     <div class="bar-track">
@@ -857,13 +1000,15 @@ class ProjectAdmin(admin.ModelAdmin):
             <div class="panel-row"><span>Total Invoices:</span><b>{invoices.count()}</b></div>
         </div>
     </div>
-    <div class="section-header">Invoice History</div>
+    <div class="section-header">Invoice History (Tax + Approved Proforma)</div>
     <table class="report-table">
         <thead>
             <tr><th>Invoice #</th><th>Type</th><th>Status</th><th>Date</th><th class='num'>Net</th><th class='num'>VAT</th><th class='num'>Total</th><th class='num'>Payable</th></tr>
         </thead>
         <tbody>{inv_rows}</tbody>
+        <tfoot>{inv_totals_row}</tfoot>
     </table>
+    {draft_section}
     <div class="section-header">Bill of Quantities</div>
     <table class="report-table">
         <thead>
