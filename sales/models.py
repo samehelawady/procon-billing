@@ -98,6 +98,7 @@ class Project(models.Model):
     advance_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     retention_a_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     retention_b_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    payment_terms = models.IntegerField(default=30, help_text="Payment terms in days from PO/Invoice date")
     is_boq_complete = models.BooleanField(
         default=False,
         editable=False,
@@ -180,6 +181,8 @@ class Invoice(models.Model):
 
     vat_percent = models.DecimalField(max_digits=5, decimal_places=2, default=5)
     material_supplied_by_client = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    collection_date = models.DateField(blank=True, null=True, help_text="Date when the invoice was collected/approved for Tax invoices")
+    payment_date = models.DateField(blank=True, null=True, help_text="Date when payment was actually received")
 
     class Meta:
         unique_together = ('project', 'inv_number')

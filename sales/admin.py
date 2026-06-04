@@ -129,6 +129,16 @@ class ClientAdmin(admin.ModelAdmin):
     .ret-block {{ border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px; }}
     .ret-title {{ font-size: 9px; font-weight: bold; color: #000080; margin-bottom: 6px; text-align: center; border-bottom: 1px solid #eee; padding-bottom: 4px; }}
     .ret-row {{ display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 3px; }}
+
+        .project-section {{ margin-bottom: 25px; border: 1px solid #ccc; border-radius: 8px; overflow: hidden; page-break-inside: avoid; }}
+    .project-header {{ background: #000080; color: white; padding: 8px 12px; font-size: 11px; font-weight: bold; }}
+    .project-meta {{ background: #f0f0f0; padding: 6px 12px; font-size: 9px; border-bottom: 1px solid #ddd; }}
+    .project-total-row td {{ background: #fff8e1; font-weight: bold; border-top: 2px solid #666; font-size: 9px; }}
+    .grand-total-box {{ margin-top: 20px; padding: 15px; background: #000080; color: white; border-radius: 8px; }}
+    .grand-table {{ width: 100%; color: white; font-size: 11px; }}
+    .grand-table td {{ padding: 4px 8px; }}
+    .grand-table .num {{ text-align: right; font-weight: bold; }}
+    .proforma-badge {{ display: inline-block; background: #ed6c02; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; font-weight: bold; }}
 </style></head><body>
     {self._logo_bar(logo_url)}
     {body_html}
@@ -139,93 +149,247 @@ class ClientAdmin(admin.ModelAdmin):
         company = CompanyProfile.get_active()
         logo_url = company.logo.url if company and company.logo else ''
 
-        # ALL invoices for this client (Tax + Proforma, all statuses)
-        invoices = Invoice.objects.filter(
-            project__client=client
-        ).select_related('project').order_by('date', 'inv_number')
+        # -----------------------------------------------------------------
+        # TAX INVOICES ONLY for the main statement (Proforma in separate table)
+        # -----------------------------------------------------------------
+        tax_invoices = Invoice.objects.filter(
+            project__client=client, inv_type='T'
+        ).exclude(is_advance_invoice=True).select_related('project').order_by('project__project_id_code', 'date', 'inv_number')
 
-        rows = ""
-        running_balance = Decimal("0")
-        total_debit = Decimal("0")
-        total_credit = Decimal("0")
-        total_vat = Decimal("0")
-        total_gross = Decimal("0")
+        # PROFORMA invoices — shown in separate table, not part of balances
+        proforma_invoices = Invoice.objects.filter(
+            project__client=client, inv_type='P'
+        ).exclude(is_advance_invoice=True).select_related('project').order_by('project__project_id_code', 'date', 'inv_number')
 
-        for inv in invoices:
-            # Debit = certified amount (net before VAT)
-            # For Draft Proforma, debit is 0 (not certified)
-            if inv.inv_type == 'P' and inv.status == 'Draft':
-                debit = Decimal("0.00")
-            else:
+        # Group tax invoices by project
+        from collections import OrderedDict
+        projects_data = OrderedDict()
+        for inv in tax_invoices:
+            proj = inv.project
+            if proj not in projects_data:
+                projects_data[proj] = []
+            projects_data[proj].append(inv)
+
+        # Build project sections
+        project_sections = ""
+        grand_total_debit = Decimal("0")
+        grand_total_credit = Decimal("0")
+        grand_total_balance = Decimal("0")
+        grand_total_vat = Decimal("0")
+        grand_total_gross = Decimal("0")
+
+        for proj, invoices_list in projects_data.items():
+            rows = ""
+            proj_debit = Decimal("0")
+            proj_credit = Decimal("0")
+            proj_balance = Decimal("0")
+            proj_vat = Decimal("0")
+            proj_gross = Decimal("0")
+            payment_terms = proj.payment_terms or 30
+
+            for inv in invoices_list:
+                # Debit = certified net amount
                 debit = inv.current_certified_net_before_vat
+                # Credit = paid amount (only if Paid)
+                credit = debit if inv.status == 'Paid' else Decimal("0.00")
+                # Balance for this invoice
+                inv_balance = debit - credit
 
-            # Credit = paid amount (net before VAT, only for Paid invoices)
-            credit = debit if inv.status == 'Paid' else Decimal("0.00")
+                # VAT and Total — only show if there's a balance (not fully paid)
+                if inv_balance > 0:
+                    vat = inv.vat_amount
+                    gross = inv.total_with_vat
+                    vat_display = f"{vat:,.2f}"
+                    gross_display = f"{gross:,.2f}"
+                else:
+                    vat = Decimal("0")
+                    gross = Decimal("0")
+                    vat_display = "—"
+                    gross_display = "—"
 
-            vat = inv.vat_amount
-            gross = inv.total_with_vat
+                # Payment date = payment_date field
+                payment_date = inv.payment_date.strftime('%d-%b-%Y') if inv.payment_date else '—'
 
-            running_balance = money(running_balance + debit - credit)
+                # Due date = invoice date + payment_terms
+                due_date = inv.date + timedelta(days=payment_terms)
+                due_display = due_date.strftime('%d-%b-%Y')
 
-            total_debit += debit
-            total_credit += credit
-            total_vat += vat
-            total_gross += gross
+                # Age logic:
+                # - If PAID: days from due date to payment date (red if late)
+                # - If NOT paid: days from today to due date
+                #   * If today < due date: days remaining in green
+                #   * If today >= due date: days overdue in red
+                if inv.status == 'Paid':
+                    if inv.payment_date and due_date:
+                        age_days = (inv.payment_date - due_date).days
+                        if age_days > 0:
+                            age_display = f'<span style="color:#d32f2f; font-weight:bold;">{age_days} days late</span>'
+                        elif age_days < 0:
+                            age_display = f'<span style="color:#2e7d32; font-weight:bold;">{abs(age_days)} days early</span>'
+                        else:
+                            age_display = '<span style="color:#2e7d32; font-weight:bold;">On time</span>'
+                    else:
+                        age_display = '—'
+                else:
+                    # Not paid — compare today with due date
+                    days_to_due = (due_date - date.today()).days
+                    if days_to_due > 0:
+                        age_display = f'<span style="color:#2e7d32; font-weight:bold;">{days_to_due} days remaining</span>'
+                    elif days_to_due < 0:
+                        age_display = f'<span style="color:#d32f2f; font-weight:bold;">{abs(days_to_due)} days overdue</span>'
+                    else:
+                        age_display = '<span style="color:#d32f2f; font-weight:bold;">Due today</span>'
 
-            # Payment date: show date if Paid, otherwise show status
-            payment_info = inv.date.strftime('%d-%b-%Y') if inv.status == 'Paid' else f"— ({inv.status})"
+                proj_debit += debit
+                proj_credit += credit
+                proj_balance += inv_balance
+                proj_vat += vat
+                proj_gross += gross
 
-            rows += f"""<tr>
-                <td>{inv.date.strftime('%d-%b-%Y')}</td>
-                <td>{inv}</td>
-                <td>{inv.project.project_name}</td>
-                <td>{inv.get_inv_type_display()}</td>
-                <td>{inv.status}</td>
-                <td class='num' style="color:#000080; font-weight:bold;">{debit:,.2f}</td>
-                <td class='num' style="color:#2e7d32;">{credit:,.2f}</td>
-                <td>{payment_info}</td>
-                <td class='num' style="font-weight:bold;">{running_balance:,.2f}</td>
-                <td class='num'>{vat:,.2f}</td>
-                <td class='num'><b>{gross:,.2f}</b></td>
-            </tr>"""
+                rows += f"""<tr>
+                    <td>{inv.date.strftime('%d-%b-%Y')}</td>
+                    <td>{inv}</td>
+                    <td>{inv.status}</td>
+                    <td>{due_display}</td>
+                    <td class='num' style="color:#000080; font-weight:bold;">{debit:,.2f}</td>
+                    <td class='num' style="color:#2e7d32;">{credit:,.2f}</td>
+                    <td>{payment_date}</td>
+                    <td class='num' style="font-weight:bold;">{inv_balance:,.2f}</td>
+                    <td class='num'>{vat_display}</td>
+                    <td class='num'>{gross_display}</td>
+                    <td>{age_display}</td>
+                </tr>"""
 
-        html = self._report_wrapper(f"""
-            <div class="report-title">STATEMENT OF ACCOUNT</div>
-            <div class="report-subtitle">Client Ledger — All Invoices</div>
-            <div class="meta-box">
-                <b>Client:</b> {client.name}<br>
-                <b>TRN:</b> {client.vat_number or 'N/A'}<br>
-                <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
+            grand_total_debit += proj_debit
+            grand_total_credit += proj_credit
+            grand_total_balance += proj_balance
+            grand_total_vat += proj_vat
+            grand_total_gross += proj_gross
+
+            project_sections += f"""
+            <div class="project-section">
+                <div class="project-header">{proj.project_id_code} — {proj.project_name}</div>
+                <div class="project-meta">
+                    <b>PO:</b> {proj.po_number or 'N/A'} | 
+                    <b>PO Amount:</b> {proj.po_amount:,.2f} | 
+                    <b>Payment Terms:</b> {payment_terms} days
+                </div>
+                <table class="report-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Invoice #</th>
+                            <th>Status</th>
+                            <th>Due Date</th>
+                            <th class='num'>Debit</th>
+                            <th class='num'>Credit</th>
+                            <th>Payment Date</th>
+                            <th class='num'>Balance</th>
+                            <th class='num'>VAT</th>
+                            <th class='num'>Total w/ VAT</th>
+                            <th>Age</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                    <tfoot>
+                        <tr class="project-total-row">
+                            <td colspan="4"><b>PROJECT SUBTOTAL</b></td>
+                            <td class='num' style="color:#000080;"><b>{proj_debit:,.2f}</b></td>
+                            <td class='num' style="color:#2e7d32;"><b>{proj_credit:,.2f}</b></td>
+                            <td></td>
+                            <td class='num'><b>{proj_balance:,.2f}</b></td>
+                            <td class='num'><b>{proj_vat:,.2f}</b></td>
+                            <td class='num'><b>{proj_gross:,.2f}</b></td>
+                            <td></td>
+                        </tr>
+                    </tfoot>
+                </table>
             </div>
+            """
+
+        # Grand totals row
+        grand_vat_display = f"{grand_total_vat:,.2f}" if grand_total_vat > 0 else "—"
+        grand_gross_display = f"{grand_total_gross:,.2f}" if grand_total_gross > 0 else "—"
+
+        # Proforma invoices table (separate, not part of balances)
+        proforma_section = ""
+        if proforma_invoices.exists():
+            prof_rows = ""
+            for inv in proforma_invoices:
+                # For proforma: use current_net_before_vat (subtotal no VAT) since proforma is not certified
+                net = inv.current_net_before_vat
+                vat = inv.vat_amount
+                total = inv.total_with_vat
+                # Age = days from invoice date to today
+                prof_age_days = (date.today() - inv.date).days
+                prof_age_display = f"{prof_age_days} days"
+                prof_rows += f"""<tr>
+                    <td>{inv.date.strftime('%d-%b-%Y')}</td>
+                    <td>{inv}</td>
+                    <td>{inv.project.project_id_code} — {inv.project.project_name}</td>
+                    <td>{inv.status}</td>
+                    <td class='num' style="color:#000080; font-weight:bold;">{net:,.2f}</td>
+                    <td class='num'>{vat:,.2f}</td>
+                    <td class='num' style="font-weight:bold;">{total:,.2f}</td>
+                    <td>{prof_age_display}</td>
+                </tr>"""
+
+            proforma_section = f"""
+            <div class="section-header" style="margin-top:30px;">Proforma Invoices <span class="proforma-badge">NOT INCLUDED IN BALANCES</span></div>
             <table class="report-table">
                 <thead>
                     <tr>
                         <th>Date</th>
                         <th>Invoice #</th>
                         <th>Project</th>
-                        <th>Type</th>
                         <th>Status</th>
-                        <th class='num'>Debit</th>
-                        <th class='num'>Credit</th>
-                        <th>Payment Date</th>
-                        <th class='num'>Balance</th>
+                        <th class='num'>Net</th>
                         <th class='num'>VAT</th>
-                        <th class='num'>Total w/ VAT</th>
+                        <th class='num'>Total</th>
+                        <th>Age</th>
                     </tr>
                 </thead>
-                <tbody>{rows}</tbody>
-                <tfoot>
-                    <tr class="total-row">
-                        <td colspan="5"><b>TOTALS</b></td>
-                        <td class='num' style="color:#000080;"><b>{total_debit:,.2f}</b></td>
-                        <td class='num' style="color:#2e7d32;"><b>{total_credit:,.2f}</b></td>
-                        <td></td>
-                        <td class='num'><b>{running_balance:,.2f}</b></td>
-                        <td class='num'><b>{total_vat:,.2f}</b></td>
-                        <td class='num'><b>{total_gross:,.2f}</b></td>
-                    </tr>
-                </tfoot>
+                <tbody>{prof_rows}</tbody>
             </table>
+            """
+
+        html = self._report_wrapper(f"""
+            <div class="report-title">STATEMENT OF ACCOUNT</div>
+            <div class="report-subtitle">Client Ledger — By Project</div>
+            <div class="meta-box">
+                <b>Client:</b> {client.name}<br>
+                <b>TRN:</b> {client.vat_number or 'N/A'}<br>
+                <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
+            </div>
+            {project_sections if project_sections else '<p style="color:#999; text-align:center; padding:40px;">No tax invoices found for this client.</p>'}
+            {f"""
+            <div class="grand-total-box">
+                <div style="font-size:13px; margin-bottom:8px; opacity:0.9;">GRAND TOTAL ACROSS ALL PROJECTS</div>
+                <table class="grand-table">
+                    <tr>
+                        <td><b>Total Debit:</b></td>
+                        <td class='num' style="color:white;"><b>{grand_total_debit:,.2f}</b></td>
+                        <td width="20"></td>
+                        <td><b>Total Credit:</b></td>
+                        <td class='num' style="color:white;"><b>{grand_total_credit:,.2f}</b></td>
+                        <td width="20"></td>
+                        <td><b>Total Balance:</b></td>
+                        <td class='num' style="color:white;"><b>{grand_total_balance:,.2f}</b></td>
+                    </tr>
+                    <tr>
+                        <td><b>Total VAT:</b></td>
+                        <td class='num' style="color:white;"><b>{grand_vat_display}</b></td>
+                        <td></td>
+                        <td><b>Total w/ VAT:</b></td>
+                        <td class='num' style="color:white;"><b>{grand_gross_display}</b></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                    </tr>
+                </table>
+            </div>
+            """ if project_sections else ""}
+            {proforma_section}
         """, logo_url)
         return HttpResponse(html)
 
@@ -296,11 +460,14 @@ class ClientAdmin(admin.ModelAdmin):
 
         cards = ""
         for proj in projects:
+            # Certified invoices only: Tax + Approved Proforma
             latest_inv = Invoice.objects.filter(
                 project=proj, is_advance_invoice=False
+            ).filter(
+                Q(inv_type='T') | Q(inv_type='P', status='Approved')
             ).order_by('-inv_number').first()
 
-            work_done = latest_inv.cumulative_work_done if latest_inv else Decimal("0")
+            work_done = latest_inv.certified_work_done if latest_inv else Decimal("0")
             po = proj.po_amount
             balance = money(po - work_done)
             progress_pct = (work_done / po * 100) if po > 0 else Decimal("0")
@@ -776,18 +943,20 @@ class ProjectAdmin(admin.ModelAdmin):
         inv_rows = ""
         inv_total_net = Decimal("0")
         inv_total_vat = Decimal("0")
-        inv_total_gross = Decimal("0")
         inv_total_payable = Decimal("0")
 
         for inv in certified_invoices:
             net = inv.current_certified_net_before_vat
             vat = inv.vat_amount
-            gross = inv.total_with_vat
             payable = inv.total_after_vat
             inv_total_net += net
             inv_total_vat += vat
-            inv_total_gross += gross
             inv_total_payable += payable
+            # Collection date for Tax invoices
+            if inv.inv_type == 'T':
+                coll_date = inv.collection_date.strftime('%d-%b-%Y') if inv.collection_date else '—'
+            else:
+                coll_date = 'N/A (Proforma)'
             inv_rows += f"""<tr>
                 <td>{inv}</td>
                 <td>{inv.get_inv_type_display()}</td>
@@ -795,8 +964,8 @@ class ProjectAdmin(admin.ModelAdmin):
                 <td>{inv.date}</td>
                 <td class='num'>{net:,.2f}</td>
                 <td class='num'>{vat:,.2f}</td>
-                <td class='num'>{gross:,.2f}</td>
                 <td class='num'>{payable:,.2f}</td>
+                <td>{coll_date}</td>
             </tr>"""
 
         # Totals row for certified invoices
@@ -804,15 +973,14 @@ class ProjectAdmin(admin.ModelAdmin):
             <td colspan="4"><b>TOTAL CERTIFIED INVOICES</b></td>
             <td class='num'><b>{inv_total_net:,.2f}</b></td>
             <td class='num'><b>{inv_total_vat:,.2f}</b></td>
-            <td class='num'><b>{inv_total_gross:,.2f}</b></td>
             <td class='num'><b>{inv_total_payable:,.2f}</b></td>
+            <td></td>
         </tr>"""
 
         # Draft Proforma rows — shown separately, NOT included in totals
         draft_rows = ""
         draft_total_net = Decimal("0")
         for inv in draft_proforma_invoices:
-            # For draft proforma, show gross amount for reference
             gross = inv.current_gross_total
             draft_total_net += gross
             draft_rows += f"""<tr>
@@ -823,7 +991,7 @@ class ProjectAdmin(admin.ModelAdmin):
                 <td class='num'>{gross:,.2f}</td>
                 <td class='num'>—</td>
                 <td class='num'>—</td>
-                <td class='num'>—</td>
+                <td>—</td>
             </tr>"""
 
         draft_totals_row = ""
@@ -834,12 +1002,12 @@ class ProjectAdmin(admin.ModelAdmin):
                 <td class='num'><b>{draft_total_net:,.2f}</b></td>
                 <td class='num'>—</td>
                 <td class='num'>—</td>
-                <td class='num'>—</td>
+                <td></td>
             </tr>"""
             draft_section = f"""<div class="section-header">Draft Proforma Invoices <span class="draft-badge">NOT CERTIFIED</span></div>
     <table class="report-table">
         <thead>
-            <tr><th>Invoice #</th><th>Type</th><th>Status</th><th>Date</th><th class='num'>Gross Amount</th><th class='num'>VAT</th><th class='num'>Total</th><th class='num'>Payable</th></tr>
+            <tr><th>Invoice #</th><th>Type</th><th>Status</th><th>Date</th><th class='num'>Gross Amount</th><th class='num'>VAT</th><th class='num'>Payable</th><th>Collection Date</th></tr>
         </thead>
         <tbody>{draft_rows}</tbody>
         <tfoot>{draft_totals_row}</tfoot>
@@ -1003,7 +1171,7 @@ class ProjectAdmin(admin.ModelAdmin):
     <div class="section-header">Invoice History (Tax + Approved Proforma)</div>
     <table class="report-table">
         <thead>
-            <tr><th>Invoice #</th><th>Type</th><th>Status</th><th>Date</th><th class='num'>Net</th><th class='num'>VAT</th><th class='num'>Total</th><th class='num'>Payable</th></tr>
+            <tr><th>Invoice #</th><th>Type</th><th>Status</th><th>Date</th><th class='num'>Net</th><th class='num'>VAT</th><th class='num'>Payable</th><th>Collection Date</th></tr>
         </thead>
         <tbody>{inv_rows}</tbody>
         <tfoot>{inv_totals_row}</tfoot>
@@ -1140,7 +1308,8 @@ class InvoiceAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Invoice Details", {
             "fields": ("project", ("inv_type", "status"), ("date", "inv_number"), "revision",
-                       ("is_advance_invoice", "retention_recovery"))
+                       ("is_advance_invoice", "retention_recovery"),
+                       ("collection_date", "payment_date"))
         }),
         ("Calculated Billing Summary", {
             "fields": (
