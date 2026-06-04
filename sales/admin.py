@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.contrib.admin import AdminSite, sites as admin_sites
 from django.forms import TextInput
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
@@ -21,14 +22,14 @@ from django.contrib import messages
 from django.shortcuts import redirect
 from django import forms
 
-# --- BRANDING ---
-from django.contrib import admin
-from django.contrib.admin import AdminSite, sites as admin_sites
+
+# =============================================================================
+# DYNAMIC ADMIN SITE — branding pulled from active CompanyProfile
+# =============================================================================
 
 class DynamicAdminSite(AdminSite):
     def each_context(self, request):
         context = super().each_context(request)
-        from .models import CompanyProfile
         company = CompanyProfile.get_active()
         if company:
             context['site_header'] = company.company_name
@@ -40,10 +41,15 @@ class DynamicAdminSite(AdminSite):
             context['index_title'] = "Billing & Project Management Portal"
         return context
 
+
 # Install the custom admin site BEFORE any @admin.register decorators run
 admin.site = DynamicAdminSite(name="admin")
 admin_sites.site = admin.site
 
+
+# =============================================================================
+# CLIENT ADMIN
+# =============================================================================
 
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
@@ -148,7 +154,7 @@ class ClientAdmin(admin.ModelAdmin):
             total_net += net
             total_vat += vat
             total_gross += gross
-            rows += f"""<tr>
+            rows += f"""<<tr>
                 <td>{inv.date}</td>
                 <td>{inv}</td>
                 <td>{inv.project.project_name}</td>
@@ -163,7 +169,7 @@ class ClientAdmin(admin.ModelAdmin):
             <div class="report-subtitle">Uncollected Tax Invoices</div>
             <div class="meta-box">
                 <b>Client:</b> {client.name}<br>
-                <b>TRN:</b> {client.vat_number or 'N/A'}<br>
+                <b>TRN:</b> {client.vat_number or 'N/A'}<<br>
                 <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
             </div>
             <table class="report-table">
@@ -199,7 +205,7 @@ class ClientAdmin(admin.ModelAdmin):
         for inv in invoices:
             gross = inv.total_with_vat
             days = (date.today() - inv.date).days
-            row = f"""<tr>
+            row = f"""<<tr>
                 <td>{inv.date}</td>
                 <td>{inv}</td>
                 <td>{inv.project.project_name}</td>
@@ -218,7 +224,7 @@ class ClientAdmin(admin.ModelAdmin):
             <div class="report-title">OUTSTANDING INVOICES REPORT</div>
             <div class="meta-box">
                 <b>Client:</b> {client.name}<br>
-                <b>TRN:</b> {client.vat_number or 'N/A'}<br>
+                <b>TRN:</b> {client.vat_number or 'N/A'}<<br>
                 <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
             </div>
 
@@ -322,13 +328,58 @@ class ClientAdmin(admin.ModelAdmin):
             <div class="report-title">CLIENT PROJECT PROGRESS</div>
             <div class="meta-box">
                 <b>Client:</b> {client.name}<br>
-                <b>TRN:</b> {client.vat_number or 'N/A'}<br>
+                <b>TRN:</b> {client.vat_number or 'N/A'}<<br>
                 <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
             </div>
             <div class="cards-container">{cards}</div>
         """, logo_url)
         return HttpResponse(html)
 
+
+# =============================================================================
+# BOQ ITEM ADMIN
+# =============================================================================
+
+@admin.register(BOQItem)
+class BOQItemAdmin(admin.ModelAdmin):
+    search_fields = ["item_number", "description"]
+    list_display = ["item_number", "description", "project", "fmt_qty", "fmt_rate", "fmt_total"]
+
+    def fmt_qty(self, obj):
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity:,.2f}</div>')
+
+    fmt_qty.short_description = "Qty"
+
+    def fmt_rate(self, obj):
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.rate:,.2f}</div>')
+
+    fmt_rate.short_description = "Rate"
+
+    def fmt_total(self, obj):
+        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity * obj.rate:,.2f}</div>')
+
+    fmt_total.short_description = "Total"
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path('get-by-project/', self.admin_site.admin_view(self.get_by_project), name='boqitem_get_by_project'),
+        ]
+        return custom + urls
+
+    def get_by_project(self, request):
+        from django.http import JsonResponse
+        project_id = request.GET.get('project_id')
+        if not project_id:
+            return JsonResponse([], safe=False)
+        items = BOQItem.objects.filter(project_id=project_id).values('id', 'item_number', 'description')
+        data = [{'id': item['id'], 'text': f"{item['item_number']} - {item['description'][:40]}"} for item in items]
+        return JsonResponse(data, safe=False)
+
+
+# =============================================================================
+# PROJECT ADMIN
+# =============================================================================
 
 class BOQItemInline(admin.TabularInline):
     model = BOQItem
@@ -371,60 +422,6 @@ class ExpenseInline(admin.TabularInline):
         if obj:
             formset.parent_project = obj
         return formset
-
-
-@admin.register(CompanyProfile)
-class CompanyProfileAdmin(admin.ModelAdmin):
-    list_display = ["company_name", "trn_number", "phone", "bank", "is_active", "logo_preview"]
-    fields = ["company_name", "logo", "letter_header", "letter_footer",
-              "trn_number", "address", "bank", "phone", "email", "website", "is_active"]
-
-    def logo_preview(self, obj):
-        if obj.logo:
-            return format_html('<img src="{}" style="max-height:40px; max-width:120px;" />', obj.logo.url)
-        return "—"
-    logo_preview.short_description = "Logo Preview"
-
-
-# =============================================================================
-# AJAX ENDPOINTS FOR DYNAMIC DROPDOWNS
-# =============================================================================
-
-@admin.register(BOQItem)
-class BOQItemAdmin(admin.ModelAdmin):
-    search_fields = ["item_number", "description"]
-    list_display = ["item_number", "description", "project", "fmt_qty", "fmt_rate", "fmt_total"]
-
-    def fmt_qty(self, obj):
-        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity:,.2f}</div>')
-
-    fmt_qty.short_description = "Qty"
-
-    def fmt_rate(self, obj):
-        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.rate:,.2f}</div>')
-
-    fmt_rate.short_description = "Rate"
-
-    def fmt_total(self, obj):
-        return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.quantity * obj.rate:,.2f}</div>')
-
-    fmt_total.short_description = "Total"
-
-    def get_urls(self):
-        urls = super().get_urls()
-        custom = [
-            path('get-by-project/', self.admin_site.admin_view(self.get_by_project), name='boqitem_get_by_project'),
-        ]
-        return custom + urls
-
-    def get_by_project(self, request):
-        from django.http import JsonResponse
-        project_id = request.GET.get('project_id')
-        if not project_id:
-            return JsonResponse([], safe=False)
-        items = BOQItem.objects.filter(project_id=project_id).values('id', 'item_number', 'description')
-        data = [{'id': item['id'], 'text': f"{item['item_number']} - {item['description'][:40]}"} for item in items]
-        return JsonResponse(data, safe=False)
 
 
 @admin.register(Project)
@@ -487,12 +484,9 @@ class ProjectAdmin(admin.ModelAdmin):
         grand_expenses = Decimal("0")
         grand_profit = Decimal("0")
 
-        # =================================================================
         # 1. CALCULATE TOTAL MANPOWER COST FOR THE PROJECT
-        # =================================================================
         total_manpower = Decimal("0")
 
-        # Employees with explicit cost-center assignments to this project
         for cc in PayrollCostCenter.objects.filter(
                 project=proj
         ).select_related('payroll_record__employee'):
@@ -501,13 +495,11 @@ class ProjectAdmin(admin.ModelAdmin):
             pr = cc.payroll_record
             days_in_month = calendar.monthrange(pr.month.year, pr.month.month)[1]
 
-            # Payroll portion: (salary + overtime) prorated by actual days in month
             payroll_portion = money(
                 (pr.total_salary_snap + pr.overtime_amount_snap) *
                 Decimal(days) / Decimal(days_in_month)
             )
 
-            # Admin portion: annual admin costs / 312 working days * days worked
             annual_admin = (
                     emp.annual_benefits + emp.annual_eid_cost +
                     emp.annual_visa_cost + emp.annual_ticket_cost
@@ -516,7 +508,6 @@ class ProjectAdmin(admin.ModelAdmin):
 
             total_manpower += payroll_portion + admin_portion
 
-        # Permanent employees assigned to this project with no cost-center splits
         for emp in Employee.objects.filter(project=proj, is_active=True):
             for pr in PayrollRecord.objects.filter(employee=emp):
                 if not pr.cost_centers.filter(project=proj).exists():
@@ -536,9 +527,7 @@ class ProjectAdmin(admin.ModelAdmin):
                         )
                         total_manpower += payroll_portion + admin_portion
 
-        # =================================================================
         # 2. ALLOCATE TOTAL MANPOWER TO BOQ ITEMS BY PROGRESS PERCENTAGE
-        # =================================================================
         boq_manpower = {}
         total_work = latest_inv.cumulative_work_done if latest_inv else Decimal("0")
         total_boq_value = sum(b.quantity * b.rate for b in boq_items)
@@ -559,9 +548,7 @@ class ProjectAdmin(admin.ModelAdmin):
 
             boq_manpower[boq.id] = money(total_manpower * pct)
 
-        # =================================================================
         # 3. BUILD REPORT ROWS
-        # =================================================================
         for boq in boq_items:
             inv_items = InvoiceItem.objects.filter(
                 boq_item=boq,
@@ -662,12 +649,12 @@ class ProjectAdmin(admin.ModelAdmin):
         <div class="meta-box">
             <div class="meta-left">
                 <b>Client:</b> {proj.client.name}<br>
-                <b>PO Number:</b> {proj.po_number or 'N/A'}<br>
+                <b>PO Number:</b> {proj.po_number or 'N/A'}<<br>
                 <b>PO Amount:</b> {po_amount:,.2f}
             </div>
             <div class="meta-right">
-                <b>Report Date:</b> {date.today().strftime('%d-%b-%Y')}<br>
-                <b>BOQ Items:</b> {boq_items.count()}<br>
+                <b>Report Date:</b> {date.today().strftime('%d-%b-%Y')}<<br>
+                <b>BOQ Items:</b> {boq_items.count()}<<br>
                 <b>Project Progress:</b> {progress_pct:.1f}%
             </div>
         </div>
@@ -735,7 +722,7 @@ class ProjectAdmin(admin.ModelAdmin):
 
         inv_rows = ""
         for inv in invoices:
-            inv_rows += f"""<tr>
+            inv_rows += f"""<<tr>
                 <td>{inv}</td>
                 <td>{inv.get_inv_type_display()}</td>
                 <td>{inv.status}</td>
@@ -751,7 +738,7 @@ class ProjectAdmin(admin.ModelAdmin):
         for b in boq_items:
             line_total = b.quantity * b.rate
             boq_total += line_total
-            boq_rows += f"""<tr>
+            boq_rows += f"""<<tr>
                 <td>{b.item_number}</td>
                 <td>{b.description[:50]}</td>
                 <td>{b.unit}</td>
@@ -933,6 +920,10 @@ class ProjectAdmin(admin.ModelAdmin):
     fmt_ret_b_pct.short_description = "Ret B %"
     fmt_ret_b_pct.admin_order_field = "retention_b_percent"
 
+
+# =============================================================================
+# INVOICE ADMIN
+# =============================================================================
 
 class InvoiceItemInline(admin.TabularInline):
     model = InvoiceItem
@@ -1130,7 +1121,7 @@ class InvoiceAdmin(admin.ModelAdmin):
             totals["curr"] += c_amt
             totals["cum"] += (p_amt + c_amt)
 
-            rows += f"""<tr>
+            rows += f"""<<tr>
                 <td class='col-item'>{boq.item_number}</td>
                 <td class='col-desc'>{boq.description}</td>
                 <td class='col-unit'>{boq.unit}</td>
@@ -1316,6 +1307,23 @@ class InvoiceAdmin(admin.ModelAdmin):
 
 
 # =============================================================================
+# COMPANY PROFILE ADMIN
+# =============================================================================
+
+@admin.register(CompanyProfile)
+class CompanyProfileAdmin(admin.ModelAdmin):
+    list_display = ["company_name", "trn_number", "phone", "bank", "is_active", "logo_preview"]
+    fields = ["company_name", "logo", "letter_header", "letter_footer",
+              "trn_number", "address", "bank", "phone", "email", "website", "is_active"]
+
+    def logo_preview(self, obj):
+        if obj.logo:
+            return format_html('<img src="{}" style="max-height:40px; max-width:120px;" />', obj.logo.url)
+        return "—"
+    logo_preview.short_description = "Logo Preview"
+
+
+# =============================================================================
 # EXPENSE ADMIN
 # =============================================================================
 
@@ -1403,9 +1411,8 @@ class ExpenseAdmin(admin.ModelAdmin):
 
 
 # =============================================================================
-# PAYROLL ALLOCATION LOGIC
+# EMPLOYEE ADMIN
 # =============================================================================
-
 
 class EmployeeTransferInline(admin.TabularInline):
     model = EmployeeTransfer
@@ -1450,13 +1457,13 @@ class EmployeeAdmin(admin.ModelAdmin):
     form = EmployeeAdminForm
     list_display = [
         "employee_id", "name", "employee_type", "payment_type",
-        "cost_center", "fmt_total_salary", "fmt_total_package","fmt_eos",
+        "cost_center", "fmt_total_salary", "fmt_total_package", "fmt_eos",
         "fmt_daily_cost", "fmt_hourly_rate", "fmt_bank_info", "is_active", "transfer_status"
     ]
     list_filter = ["employee_type", "payment_type", "is_head_office", "is_active", "project"]
     search_fields = ["name", "employee_id"]
     inlines = [EmployeeTransferInline]
-    readonly_fields = ["total_salary", "monthly_admin_cost", "daily_cost", "hourly_rate_ot","eos_amount"]
+    readonly_fields = ["total_salary", "monthly_admin_cost", "daily_cost", "hourly_rate_ot", "display_eos"]
     fieldsets = (
         ("Employee Information", {
             "fields": (
@@ -1483,10 +1490,13 @@ class EmployeeAdmin(admin.ModelAdmin):
             "fields": (
                 ("total_salary", "monthly_admin_cost"),
                 ("daily_cost", "hourly_rate_ot"),
-                ("eos_amount",),
+                ("display_eos",),
             ),
-            "description": "Daily Cost = (Total Salary + Admin Cost) / 30. Hourly OT Rate = Total Salary / 30 / 8 (Site workers only)."
-                           "EOS = End of Service benefits (21 days/years 1-3, 30 days/year 4+)."
+            "description": (
+                "Daily Cost = (Total Salary + Admin Cost) / 30. "
+                "Hourly OT Rate = Total Salary / 30 / 8 (Site workers only). "
+                "EOS = End of Service benefits (21 days/years 1-3, 30 days/year 4+)."
+            ),
         }),
         ("Bank Details", {
             "fields": (
@@ -1496,6 +1506,50 @@ class EmployeeAdmin(admin.ModelAdmin):
             "description": "Bank information for Bank Transfer or WPS Agency payments."
         }),
     )
+
+    def display_eos(self, obj):
+        """Safe wrapper for eos_amount property with detailed debugging."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            # Check if @property decorator exists
+            raw_attr = getattr(type(obj), 'eos_amount', None)
+            logger.error(f"DEBUG EOS: type(obj)={type(obj).__name__}")
+            logger.error(f"DEBUG EOS: raw class attr type = {type(raw_attr).__name__ if raw_attr else 'None'}")
+
+            # Try to access the property
+            val = obj.eos_amount
+            logger.error(f"DEBUG EOS: obj.eos_amount = {val}")
+            logger.error(f"DEBUG EOS: type of value = {type(val).__name__}")
+
+            # Check employee conditions
+            logger.error(f"DEBUG EOS: date_joined = {obj.date_joined}")
+            logger.error(f"DEBUG EOS: is_active = {obj.is_active}")
+            logger.error(f"DEBUG EOS: basic_salary = {obj.basic_salary}")
+
+            # If it's a property object, that's the problem
+            if hasattr(val, '__class__') and val.__class__.__name__ == 'property':
+                return mark_safe('<span style="color:red; font-weight:bold;">ERROR: @property missing</span>')
+
+            # Convert to Decimal safely
+            if val is None:
+                return mark_safe('<span style="color:#999;">0.00</span>')
+
+            val = money(val)
+            if val > 0:
+                return mark_safe(f'<div style="text-align:right;font-weight:bold;color:#d32f2f;">{val:,.2f}</div>')
+            else:
+                return mark_safe(f'<span style="color:#999;">0.00</span>')
+
+        except Exception as e:
+            logger.error(f"DEBUG EOS ERROR for {obj}: {e}", exc_info=True)
+            return mark_safe(f'<span style="color:red; font-weight:bold;">ERROR: {str(e)[:40]}</span>')
+
+    display_eos.short_description = "EOS (End of Service)"
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.prefetch_related('payroll_records')
 
     def cost_center(self, obj):
         if obj.is_head_office:
@@ -1523,6 +1577,24 @@ class EmployeeAdmin(admin.ModelAdmin):
 
     fmt_total_package.short_description = "Total Package"
 
+    def fmt_eos(self, obj):
+        """Display EOS amount in employee list. obj.eos_amount is a model property."""
+        try:
+            val = obj.eos_amount  # Access as property, NOT callable
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error accessing eos_amount for {obj}: {e}")
+            val = Decimal("0.00")
+
+        if val and val > 0:
+            return mark_safe(
+                f'<div style="text-align:right;font-weight:bold;color:#d32f2f;">{val:,.2f}</div>'
+            )
+        return mark_safe('<span style="color:#999;">—</span>')
+
+    fmt_eos.short_description = "EOS"
+
     def fmt_daily_cost(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#2e7d32;font-weight:bold;">{obj.daily_cost:,.2f}</div>')
 
@@ -1534,18 +1606,6 @@ class EmployeeAdmin(admin.ModelAdmin):
         return mark_safe('<span style="color:#999;">—</span>')
 
     fmt_hourly_rate.short_description = "Hourly Rate"
-
-
-    def fmt_eos(self, obj):
-        val = obj.eos_amount
-        if val > 0:
-            return mark_safe(
-                f'<div style="text-align:right;font-weight:bold;color:#d32f2f;">{val:,.2f}</div>'
-            )
-        return mark_safe('<span style="color:#999;">—</span>')
-
-    fmt_eos.short_description = "EOS"
-
 
     def transfer_status(self, obj):
         active_transfers = obj.transfers.filter(
@@ -1575,39 +1635,10 @@ class EmployeeAdmin(admin.ModelAdmin):
                 )
         return super().changelist_view(request, extra_context)
 
-    def get_urls(self):
-        urls = super().get_urls()
-        custom = [
 
-        ]
-        return custom + urls
-
-    def _logo_bar(self, logo_url):
-        if logo_url:
-            return f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>'
-        return ''
-
-    def get_formset(self, request, obj=None, **kwargs):
-        formset = super().get_formset(request, obj, **kwargs)
-        # Override widget for overtime_hours in the inline (if field exists)
-        if 'overtime_hours' in formset.form.base_fields:
-            formset.form.base_fields['overtime_hours'].widget = forms.NumberInput(attrs={'step': '1', 'min': '0'})
-        return formset
-
-    def fmt_overtime_amount(self, obj):
-        try:
-            ot_hours = obj.overtime_hours
-        except Exception:
-            ot_hours = Decimal("0")
-        if ot_hours and ot_hours > 0 and obj.payroll_record and obj.payroll_record.employee:
-            rate = obj.payroll_record.employee.hourly_rate_ot
-            if rate > 0:
-                amt = money(ot_hours * rate)
-                return mark_safe(f'<div style="text-align:right;font-weight:bold;">{amt:,.2f}</div>')
-        return mark_safe('<span style="color:#999;">—</span>')
-
-    fmt_overtime_amount.short_description = "OT Amount"
-
+# =============================================================================
+# PAYROLL ADMIN
+# =============================================================================
 
 class PayrollAllocationInline(admin.TabularInline):
     model = PayrollAllocation
@@ -1628,7 +1659,6 @@ class PayrollCostCenterInline(admin.TabularInline):
 
     def get_formset(self, request, obj=None, **kwargs):
         formset = super().get_formset(request, obj, **kwargs)
-        # Override widget for overtime_hours in the inline (if field exists)
         if 'overtime_hours' in formset.form.base_fields:
             formset.form.base_fields['overtime_hours'].widget = forms.NumberInput(attrs={'step': '1', 'min': '0'})
         return formset
@@ -1660,22 +1690,24 @@ class PayrollRecordAdmin(admin.ModelAdmin):
     form = PayrollRecordAdminForm
     inlines = [PayrollCostCenterInline, PayrollAllocationInline]
     list_display = [
-        "employee", "month", "fmt_total_salary", "fmt_overtime", "fmt_absence",
-        "fmt_advance", "fmt_other_ded", "fmt_net_salary", "timesheet_button", "allocation_status"
+        "employee", "month", "fmt_total_salary", "fmt_overtime", "fmt_days_absent",
+        "fmt_absence", "fmt_advance", "fmt_other_ded", "fmt_net_salary",
+        "timesheet_button", "labor_cost_button", "allocation_status"
     ]
     list_filter = ["month", "is_allocated", "employee__employee_type", "employee__payment_type"]
     search_fields = ["employee__name", "employee__employee_id"]
-    actions = ["allocate_selected"]
+    actions = ["allocate_selected", "recalculate_selected"]
     date_hierarchy = "month"
 
+    # -----------------------------------------------------------------
+    # LIST DISPLAY FORMATTERS
+    # -----------------------------------------------------------------
     def fmt_total_salary(self, obj):
         return mark_safe(f'<div style="text-align:right;">{obj.total_salary_snap:,.2f}</div>')
-
     fmt_total_salary.short_description = "Total Salary"
 
     def fmt_overtime(self, obj):
         if obj.employee.employee_type == 'Site':
-            # Only show cost center OT hours (per date range)
             try:
                 cc_ot_hours = obj.cost_centers.aggregate(total=Sum('overtime_hours'))['total'] or Decimal("0")
             except Exception:
@@ -1685,36 +1717,57 @@ class PayrollRecordAdmin(admin.ModelAdmin):
                 return mark_safe(f'<div style="text-align:right;">{cc_ot_hours}h / {ot_amount:,.2f}</div>')
             return mark_safe('<span style="color:#999;">—</span>')
         return mark_safe('<span style="color:#999;">—</span>')
-
     fmt_overtime.short_description = "OT (Hrs/Amt)"
+
+    def fmt_days_absent(self, obj):
+        days = obj.days_absent
+        if days > 0:
+            return mark_safe(f'<div style="text-align:right;color:#d32f2f;font-weight:bold;">{days}</div>')
+        return mark_safe('<div style="text-align:right;color:#2e7d32;">0</div>')
+    fmt_days_absent.short_description = "Abs Days"
 
     def fmt_absence(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.absence_deduction_snap:,.2f})</div>')
-
     fmt_absence.short_description = "Absence"
 
     def fmt_advance(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.salary_advance:,.2f})</div>')
-
     fmt_advance.short_description = "Advance"
 
     def fmt_other_ded(self, obj):
         return mark_safe(f'<div style="text-align:right;color:#d32f2f;">({obj.other_deduction:,.2f})</div>')
-
     fmt_other_ded.short_description = "Other Ded."
 
     def fmt_net_salary(self, obj):
         return mark_safe(f'<div style="text-align:right;font-weight:bold;">{obj.net_salary_snap:,.2f}</div>')
-
     fmt_net_salary.short_description = "Net Salary"
 
     def allocation_status(self, obj):
         if obj.is_allocated:
             return mark_safe('<b style="color:#2e7d32;">ALLOCATED</b>')
         return mark_safe('<b style="color:#d32f2f;">PENDING</b>')
-
     allocation_status.short_description = "Status"
 
+    # -----------------------------------------------------------------
+    # BUTTONS
+    # -----------------------------------------------------------------
+    def timesheet_button(self, obj):
+        url = reverse('admin:payroll_timesheet', args=[obj.pk])
+        return format_html(
+            '<a class="button" href="{}" target="_blank" style="background:#0288d1; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Time Sheet</a>',
+            url)
+    timesheet_button.short_description = "Sheet"
+
+    def labor_cost_button(self, obj):
+        url = reverse('admin:payroll_labor_cost') + f'?month={obj.month.strftime("%Y-%m")}'
+        return format_html(
+            '<a class="button" href="{}" target="_blank" style="background:#6a1b9a; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Labor Cost</a>',
+            url)
+    labor_cost_button.short_description = "Cost Rpt"
+
+    # -----------------------------------------------------------------
+    # ACTIONS
+    # -----------------------------------------------------------------
     @admin.action(description="Allocate selected payroll to projects / BOQ items")
     def allocate_selected(self, request, queryset):
         done = 0
@@ -1729,6 +1782,22 @@ class PayrollRecordAdmin(admin.ModelAdmin):
                 skipped += 1
         self.message_user(request, f"Allocated: {done} | Skipped/Failed: {skipped}")
 
+    @admin.action(description="Recalculate snaps & net salary for selected")
+    def recalculate_selected(self, request, queryset):
+        for rec in queryset:
+            rec.save()
+        self.message_user(request, f"Recalculated {queryset.count()} record(s).")
+
+    # -----------------------------------------------------------------
+    # SAVE RELATED — recalculate after cost-center inlines are saved
+    # -----------------------------------------------------------------
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        form.instance.save()
+
+    # -----------------------------------------------------------------
+    # CHANGE LIST — alerts + labor cost link
+    # -----------------------------------------------------------------
     def changelist_view(self, request, extra_context=None):
         today = date.today()
         first_day = today.replace(day=1)
@@ -1743,237 +1812,18 @@ class PayrollRecordAdmin(admin.ModelAdmin):
                     f"<a href='allocate/' style='color:#d32f2f; text-decoration:underline; font-weight:bold;'>Allocate Now</a>"
                 )
             )
+        messages.info(
+            request,
+            mark_safe(
+                f'<a href="{reverse("admin:payroll_labor_cost")}?month={last_month.strftime("%Y-%m")}" '
+                f'target="_blank" style="color:#6a1b9a; font-weight:bold;">📊 View Monthly Labor Cost Report</a>'
+            )
+        )
         return super().changelist_view(request, extra_context)
 
-    def timesheet_button(self, obj):
-        url = reverse('admin:payroll_timesheet', args=[obj.pk])
-        return format_html(
-            '<a class="button" href="{}" target="_blank" style="background:#0288d1; color:white; padding: 2px 8px; border-radius: 4px; font-size:10px;">Time Sheet</a>',
-            url)
-
-    timesheet_button.short_description = "Time Sheet"
-
-    def _logo_bar(self, logo_url):
-        if logo_url:
-            return f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>'
-        return ''
-
-    def timesheet_view(self, request, pk):
-        payroll = get_object_or_404(PayrollRecord, pk=pk)
-        emp = payroll.employee
-        company = CompanyProfile.get_active()
-        logo_url = company.logo.url if company and company.logo else ''
-
-        # Month is from the payroll record itself
-        month_start = payroll.month
-        if month_start.month == 12:
-            next_month = date(month_start.year + 1, 1, 1)
-        else:
-            next_month = date(month_start.year, month_start.month + 1, 1)
-        month_end = next_month - timedelta(days=1)
-        days_in_month = month_end.day
-
-        # Get all cost centers for this payroll record
-        cost_centers = list(PayrollCostCenter.objects.filter(
-            payroll_record=payroll
-        ).select_related('project'))
-
-        # Build day-by-day attendance
-        day_entries = []
-        for day_num in range(1, days_in_month + 1):
-            day_date = month_start.replace(day=day_num)
-
-            # Find cost center for this day
-            cc_for_day = None
-            for cc in cost_centers:
-                if cc.from_date <= day_date <= cc.to_date:
-                    cc_for_day = cc
-                    break
-
-            if cc_for_day:
-                # Check if this is the LAST day of the cost center period
-                is_last_day = (day_date == cc_for_day.to_date)
-                day_entries.append({
-                    'date': day_date,
-                    'project': cc_for_day.project,
-                    'status': 'Present',
-                    'ot_hours': cc_for_day.overtime_hours if is_last_day else Decimal("0"),
-                    'bonus': cc_for_day.bonus if is_last_day else Decimal("0"),
-                    'is_last_day': is_last_day,
-                    'is_weekend': day_date.weekday() >= 5,
-                })
-            else:
-                # Check if employee is assigned to a project permanently
-                if emp.project:
-                    day_entries.append({
-                        'date': day_date,
-                        'project': emp.project,
-                        'status': 'Present',
-                        'ot_hours': Decimal("0"),
-                        'bonus': Decimal("0"),
-                        'is_last_day': False,
-                        'is_weekend': day_date.weekday() >= 5,
-                    })
-                else:
-                    day_entries.append({
-                        'date': day_date,
-                        'project': None,
-                        'status': '—',
-                        'ot_hours': Decimal("0"),
-                        'bonus': Decimal("0"),
-                        'is_last_day': False,
-                        'is_weekend': day_date.weekday() >= 5,
-                    })
-
-        # Build rows
-        rows = ""
-        total_ot = Decimal("0")
-        total_bonus = Decimal("0")
-        present_days = 0
-        for entry in day_entries:
-            day_name = entry['date'].strftime('%a')
-            date_str = entry['date'].strftime('%d-%b-%Y')
-            proj_name = entry['project'].project_name if entry['project'] else '—'
-            proj_code = entry['project'].project_id_code if entry['project'] else ''
-            ot = money(entry['ot_hours'])
-            bonus = money(entry['bonus'])
-            total_ot += ot
-            total_bonus += bonus
-            if entry['status'] == 'Present':
-                present_days += 1
-
-            # Highlight last day of cost center period
-            last_day_style = "background:#e8f5e9; font-weight:bold;" if entry['is_last_day'] else ""
-            weekend_style = "background:#f5f5f5;" if entry['is_weekend'] and not entry['is_last_day'] else ""
-            row_style = last_day_style or weekend_style
-
-            rows += f"""<tr style="{row_style}">
-                <td style="text-align:center; font-weight:bold;">{day_name}</td>
-                <td>{date_str}</td>
-                <td><b>{proj_code}</b> — {proj_name}</td>
-                <td style="text-align:center;">{entry['status']}</td>
-                <td style="text-align:right; font-weight:bold; color:#ed6c02;">{ot:,.2f}</td>
-                <td style="text-align:right; font-weight:bold; color:#2e7d32;">{bonus:,.2f}</td>
-            </tr>"""
-
-        # Summary stats - use exact totals from cost centers (not prorated)
-        exact_ot = Decimal("0")
-        exact_bonus = Decimal("0")
-        for cc in cost_centers:
-            exact_ot += cc.overtime_hours
-            exact_bonus += cc.bonus
-
-        hourly_rate = emp.hourly_rate_ot if emp.employee_type == 'Site' else Decimal("0")
-        ot_amount = money(exact_ot * hourly_rate) if hourly_rate > 0 else Decimal("0")
-        total_extra = money(ot_amount + exact_bonus)
-
-        html = f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<style>
-    @page {{ size: A4 portrait; margin: 10mm; }}
-    * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; color: #222; padding: 10px; }}
-    .logo-bar {{ text-align: right; margin-bottom: 6px; }}
-    .logo-bar img {{ max-height: 60px; max-width: 180px; object-fit: contain; }}
-    .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
-    .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
-    .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; line-height: 1.6; font-size: 10px; }}
-    .meta-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }}
-    .meta-card {{ border: 1px solid #ccc; border-radius: 6px; padding: 8px; background: #fafafa; }}
-    .meta-label {{ font-size: 8px; color: #666; text-transform: uppercase; margin-bottom: 3px; }}
-    .meta-value {{ font-size: 12px; font-weight: bold; color: #000080; }}
-    .report-table {{ width: 100%; border-collapse: collapse; font-size: 9px; margin-top: 6px; }}
-    .report-table th {{ background: #e8e8e8; border: 1px solid #999; padding: 6px; text-align: center; font-weight: bold; font-size: 8px; }}
-    .report-table td {{ border: 1px solid #ccc; padding: 5px; }}
-    .report-table tr:nth-child(even) {{ background: #fafafa; }}
-    .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; }}
-    .summary-box {{ margin-top: 15px; padding: 12px; background: #000080; color: white; text-align: center; font-size: 14px; border-radius: 6px; }}
-    .signature-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-top: 30px; }}
-    .signature-block {{ text-align: center; }}
-    .signature-line {{ border-top: 1px solid #333; margin-top: 40px; padding-top: 5px; font-size: 10px; }}
-</style></head><body>
-    {self._logo_bar(logo_url)}
-    <div class="report-title">WORKER TIME SHEET</div>
-    <div class="report-subtitle">{emp.name} — {month_start.strftime('%B %Y')}</div>
-
-    <div class="meta-grid">
-        <div class="meta-card">
-            <div class="meta-label">Employee ID</div>
-            <div class="meta-value">{emp.employee_id}</div>
-        </div>
-        <div class="meta-card">
-            <div class="meta-label">Employee Type</div>
-            <div class="meta-value">{emp.get_employee_type_display()}</div>
-        </div>
-        <div class="meta-card">
-            <div class="meta-label">Payment Type</div>
-            <div class="meta-value">{emp.get_payment_type_display()}</div>
-        </div>
-        <div class="meta-card">
-            <div class="meta-label">Basic Salary</div>
-            <div class="meta-value">{emp.basic_salary:,.2f}</div>
-        </div>
-        <div class="meta-card">
-            <div class="meta-label">Hourly OT Rate</div>
-            <div class="meta-value">{hourly_rate:,.2f}</div>
-        </div>
-        <div class="meta-card">
-            <div class="meta-label">Daily Rate</div>
-            <div class="meta-value">{emp.daily_rate:,.2f}</div>
-        </div>
-    </div>
-
-    <div class="meta-box">
-        <b>Bank Name:</b> {emp.bank_name or 'N/A'} &nbsp;|&nbsp;
-        <b>IBAN:</b> {emp.iban or 'N/A'} &nbsp;|&nbsp;
-        <b>Routing:</b> {emp.routing_number or 'N/A'}
-    </div>
-
-    <table class="report-table">
-        <thead>
-            <tr>
-                <th style="width:8%;">Day</th>
-                <th style="width:15%;">Date</th>
-                <th style="width:40%;">Project</th>
-                <th style="width:10%;">Status</th>
-                <th style="width:10%;">OT Hours</th>
-                <th style="width:10%;">Bonus</th>
-            </tr>
-        </thead>
-        <tbody>{rows}</tbody>
-        <tfoot>
-            <tr class="total-row">
-                <td colspan="3"><b>TOTALS</b></td>
-                <td style="text-align:center;"><b>{present_days} Days</b></td>
-                <td style="text-align:right;"><b>{exact_ot:,.2f}h</b></td>
-                <td style="text-align:right;"><b>{exact_bonus:,.2f}</b></td>
-            </tr>
-        </tfoot>
-    </table>
-
-    <div class="summary-box">
-        <b>Total OT Hours:</b> {exact_ot:,.2f}h &nbsp;|&nbsp;
-        <b>Total OT Amount:</b> {ot_amount:,.2f} &nbsp;|&nbsp;
-        <b>Total Bonus:</b> {exact_bonus:,.2f} &nbsp;|&nbsp;
-        <b>Total Extra:</b> {total_extra:,.2f}
-    </div>
-
-    <div class="signature-grid">
-        <div class="signature-block">
-            <div class="signature-line">Worker Signature</div>
-        </div>
-        <div class="signature-block">
-            <div class="signature-line">Site Supervisor</div>
-        </div>
-        <div class="signature-block">
-            <div class="signature-line">HR Manager</div>
-        </div>
-    </div>
-
-    <script>window.onload = function() {{ window.print(); }}</script>
-</body></html>"""
-        return HttpResponse(html)
-
+    # -----------------------------------------------------------------
+    # URLS
+    # -----------------------------------------------------------------
     def get_urls(self):
         urls = super().get_urls()
         custom = [
@@ -1981,9 +1831,745 @@ class PayrollRecordAdmin(admin.ModelAdmin):
             path("reports/staff/", self.admin_site.admin_view(self.staff_report), name="payroll_staff_report"),
             path("reports/wps/", self.admin_site.admin_view(self.wps_report), name="payroll_wps_report"),
             path("reports/cash/", self.admin_site.admin_view(self.cash_report), name="payroll_cash_report"),
+            path("reports/labor-cost/", self.admin_site.admin_view(self.labor_cost_report), name="payroll_labor_cost"),
             path('<int:pk>/timesheet/', self.admin_site.admin_view(self.timesheet_view), name='payroll_timesheet'),
         ]
         return custom + urls
+
+    # -----------------------------------------------------------------
+    # TIMESHEET VIEW — enhanced with full salary breakdown
+    # -----------------------------------------------------------------
+    def timesheet_view(self, request, pk):
+            payroll = get_object_or_404(PayrollRecord, pk=pk)
+            emp = payroll.employee
+            company = CompanyProfile.get_active()
+            logo_url = company.logo.url if company and company.logo else ''
+
+            month_start = payroll.month
+            if month_start.month == 12:
+                next_month = date(month_start.year + 1, 1, 1)
+            else:
+                next_month = date(month_start.year, month_start.month + 1, 1)
+            month_end = next_month - timedelta(days=1)
+            days_in_month = month_end.day
+
+            cost_centers = list(PayrollCostCenter.objects.filter(
+                payroll_record=payroll
+            ).select_related('project'))
+
+            # Build day-by-day attendance
+            day_entries = []
+            for day_num in range(1, days_in_month + 1):
+                day_date = month_start.replace(day=day_num)
+                cc_for_day = None
+                for cc in cost_centers:
+                    if cc.from_date <= day_date <= cc.to_date:
+                        cc_for_day = cc
+                        break
+
+                if cc_for_day:
+                    is_last_day = (day_date == cc_for_day.to_date)
+                    day_entries.append({
+                        'date': day_date,
+                        'project': cc_for_day.project,
+                        'status': 'Present',
+                        'status_color': '#2e7d32',
+                        'ot_hours': cc_for_day.overtime_hours if is_last_day else Decimal("0"),
+                        'bonus': cc_for_day.bonus if is_last_day else Decimal("0"),
+                        'is_last_day': is_last_day,
+                        'is_weekend': day_date.weekday() >= 5,
+                    })
+                else:
+                    if emp.project:
+                        day_entries.append({
+                            'date': day_date,
+                            'project': emp.project,
+                            'status': 'Present',
+                            'status_color': '#2e7d32',
+                            'ot_hours': Decimal("0"),
+                            'bonus': Decimal("0"),
+                            'is_last_day': False,
+                            'is_weekend': day_date.weekday() >= 5,
+                        })
+                    else:
+                        day_entries.append({
+                            'date': day_date,
+                            'project': None,
+                            'status': 'Absent',
+                            'status_color': '#d32f2f',
+                            'ot_hours': Decimal("0"),
+                            'bonus': Decimal("0"),
+                            'is_last_day': False,
+                            'is_weekend': day_date.weekday() >= 5,
+                        })
+
+            # Build rows
+            rows = ""
+            total_ot = Decimal("0")
+            total_bonus = Decimal("0")
+            present_days = 0
+            absent_days = 0
+            for entry in day_entries:
+                day_name = entry['date'].strftime('%a')
+                date_str = entry['date'].strftime('%d-%b-%Y')
+                proj_name = entry['project'].project_name if entry['project'] else '—'
+                proj_code = entry['project'].project_id_code if entry['project'] else ''
+                ot = money(entry['ot_hours'])
+                bonus = money(entry['bonus'])
+                total_ot += ot
+                total_bonus += bonus
+                if entry['status'] == 'Present':
+                    present_days += 1
+                else:
+                    absent_days += 1
+
+                last_day_style = "background:#e8f5e9; font-weight:bold;" if entry['is_last_day'] else ""
+                weekend_style = "background:#f5f5f5;" if entry['is_weekend'] and not entry['is_last_day'] else ""
+                row_style = last_day_style or weekend_style
+
+                rows += f"""<tr style="{row_style}">
+                    <td style="text-align:center; font-weight:bold;">{day_name}</td>
+                    <td>{date_str}</td>
+                    <td><b>{proj_code}</b> — {proj_name}</td>
+                    <td style="text-align:center; color:{entry['status_color']}; font-weight:bold;">{entry['status']}</td>
+                    <td style="text-align:right; font-weight:bold; color:#ed6c02;">{ot:,.2f}</td>
+                    <td style="text-align:right; font-weight:bold; color:#2e7d32;">{bonus:,.2f}</td>
+                </tr>"""
+
+            # Exact totals from cost centers (merged OT: record OT + cost center OT)
+            exact_ot = payroll.overtime_hours  # record-level OT hours
+            exact_bonus = Decimal("0")
+            for cc in cost_centers:
+                exact_ot += cc.overtime_hours
+                exact_bonus += cc.bonus
+
+            hourly_rate = emp.hourly_rate_ot if emp.employee_type == 'Site' else Decimal("0")
+            total_ot_amount = money(exact_ot * hourly_rate) if hourly_rate > 0 else Decimal("0")
+            total_extra = money(total_ot_amount + exact_bonus)
+
+            # -----------------------------------------------------------------
+            # SALARY BREAKDOWN DATA — merged OT display
+            # -----------------------------------------------------------------
+            basic = payroll.basic_salary_snap
+            housing = payroll.housing_allowance_snap
+            transport = payroll.transport_allowance_snap
+            other = payroll.other_allowances_snap
+            total_salary = payroll.total_salary_snap
+            gross = money(total_salary + total_ot_amount + exact_bonus)
+            absence_ded = payroll.absence_deduction_snap
+            advance = payroll.salary_advance
+            other_ded = payroll.other_deduction
+            total_deductions = money(absence_ded + advance + other_ded)
+            net = payroll.net_salary_snap
+
+            html = f"""<!DOCTYPE html>
+    <html><head><meta charset="UTF-8">
+    <style>
+        @page {{ size: A4 portrait; margin: 10mm; }}
+        * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+        body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; color: #222; padding: 10px; }}
+        .logo-bar {{ text-align: right; margin-bottom: 6px; }}
+        .logo-bar img {{ max-height: 60px; max-width: 180px; object-fit: contain; }}
+        .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
+        .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
+        .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; line-height: 1.6; font-size: 10px; }}
+        .meta-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }}
+        .meta-card {{ border: 1px solid #ccc; border-radius: 6px; padding: 8px; background: #fafafa; }}
+        .meta-label {{ font-size: 8px; color: #666; text-transform: uppercase; margin-bottom: 3px; }}
+        .meta-value {{ font-size: 12px; font-weight: bold; color: #000080; }}
+        .report-table {{ width: 100%; border-collapse: collapse; font-size: 9px; margin-top: 6px; }}
+        .report-table th {{ background: #e8e8e8; border: 1px solid #999; padding: 6px; text-align: center; font-weight: bold; font-size: 8px; }}
+        .report-table td {{ border: 1px solid #ccc; padding: 5px; }}
+        .report-table tr:nth-child(even) {{ background: #fafafa; }}
+        .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; }}
+        .summary-box {{ margin-top: 15px; padding: 12px; background: #000080; color: white; text-align: center; font-size: 14px; border-radius: 6px; }}
+        .signature-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-top: 30px; }}
+        .signature-block {{ text-align: center; }}
+        .signature-line {{ border-top: 1px solid #333; margin-top: 40px; padding-top: 5px; font-size: 10px; }}
+        .payroll-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 15px 0; }}
+        .payroll-panel {{ border: 1px solid #ccc; border-radius: 8px; padding: 12px; background: white; }}
+        .panel-title {{ font-size: 11px; font-weight: bold; color: #000080; margin-bottom: 10px; border-bottom: 2px solid #000080; padding-bottom: 6px; text-align: center; }}
+        .pay-row {{ display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 5px; padding: 3px 0; border-bottom: 1px dotted #eee; }}
+        .pay-row.total {{ font-weight: bold; font-size: 11px; border-top: 2px solid #333; border-bottom: none; margin-top: 5px; padding-top: 8px; color: #000080; }}
+        .pay-row.deduction {{ color: #d32f2f; }}
+        .pay-row.net {{ font-size: 13px; font-weight: bold; color: #000080; border-top: 2px solid #000080; margin-top: 8px; padding-top: 10px; }}
+        .highlight-green {{ color: #2e7d32; font-weight: bold; }}
+        .highlight-red {{ color: #d32f2f; font-weight: bold; }}
+        .highlight-orange {{ color: #ed6c02; font-weight: bold; }}
+        @media print {{ .no-print {{ display: none; }} }}
+    </style></head><body>
+        {self._logo_bar(logo_url)}
+        <div class="report-title">WORKER TIME SHEET & PAYROLL SUMMARY</div>
+        <div class="report-subtitle">{emp.name} — {month_start.strftime('%B %Y')}</div>
+
+        <div class="meta-grid">
+            <div class="meta-card">
+                <div class="meta-label">Employee ID</div>
+                <div class="meta-value">{emp.employee_id}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Employee Type</div>
+                <div class="meta-value">{emp.get_employee_type_display()}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Payment Type</div>
+                <div class="meta-value">{emp.get_payment_type_display()}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Basic Salary</div>
+                <div class="meta-value">{emp.basic_salary:,.2f}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Hourly OT Rate</div>
+                <div class="meta-value">{hourly_rate:,.2f}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Daily Rate</div>
+                <div class="meta-value">{emp.daily_rate:,.2f}</div>
+            </div>
+        </div>
+
+        <div class="meta-box">
+            <b>Bank Name:</b> {emp.bank_name or 'N/A'} &nbsp;|&nbsp;
+            <b>IBAN:</b> {emp.iban or 'N/A'} &nbsp;|&nbsp;
+            <b>Routing:</b> {emp.routing_number or 'N/A'}
+        </div>
+
+        <table class="report-table">
+            <thead>
+                <tr>
+                    <th style="width:8%;">Day</th>
+                    <th style="width:15%;">Date</th>
+                    <th style="width:35%;">Project</th>
+                    <th style="width:12%;">Status</th>
+                    <th style="width:15%;">OT Hours</th>
+                    <th style="width:15%;">Bonus</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+            <tfoot>
+                <tr class="total-row">
+                    <td colspan="3"><b>TOTALS</b></td>
+                    <td style="text-align:center;">
+                        <b style="color:#2e7d32;">{present_days} Pres</b> / 
+                        <b style="color:#d32f2f;">{absent_days} Abs</b>
+                    </td>
+                    <td style="text-align:right;"><b>{exact_ot:,.2f}h</b></td>
+                    <td style="text-align:right;"><b>{exact_bonus:,.2f}</b></td>
+                </tr>
+            </tfoot>
+        </table>
+
+        <!-- PAYROLL BREAKDOWN — merged OT, no admin cost -->
+        <div class="payroll-grid">
+            <div class="payroll-panel">
+                <div class="panel-title">EARNINGS</div>
+                <div class="pay-row"><span>Basic Salary</span><span>{basic:,.2f}</span></div>
+                <div class="pay-row"><span>Housing Allowance</span><span>{housing:,.2f}</span></div>
+                <div class="pay-row"><span>Transport Allowance</span><span>{transport:,.2f}</span></div>
+                <div class="pay-row"><span>Other Allowances</span><span>{other:,.2f}</span></div>
+                <div class="pay-row total"><span>TOTAL SALARY</span><span>{total_salary:,.2f}</span></div>
+                <div style="height:8px;"></div>
+                <div class="pay-row"><span>Total OT ({exact_ot:,.2f}h @ {hourly_rate:,.2f})</span><span class="highlight-green">{total_ot_amount:,.2f}</span></div>
+                <div class="pay-row"><span>Bonus</span><span class="highlight-green">{exact_bonus:,.2f}</span></div>
+                <div class="pay-row total"><span>GROSS PAY</span><span class="highlight-green">{gross:,.2f}</span></div>
+            </div>
+
+            <div class="payroll-panel">
+                <div class="panel-title">DEDUCTIONS & NET PAY</div>
+                <div class="pay-row deduction">
+                    <span>Absence Deduction ({absent_days} days @ {emp.daily_rate:,.2f})</span>
+                    <span>({absence_ded:,.2f})</span>
+                </div>
+                <div class="pay-row deduction">
+                    <span>Salary Advance</span>
+                    <span>({advance:,.2f})</span>
+                </div>
+                <div class="pay-row deduction">
+                    <span>Other Deductions</span>
+                    <span>({other_ded:,.2f})</span>
+                </div>
+                <div class="pay-row total deduction">
+                    <span>TOTAL DEDUCTIONS</span>
+                    <span>({total_deductions:,.2f})</span>
+                </div>
+                <div style="height:15px;"></div>
+                <div class="pay-row net">
+                    <span>NET SALARY</span>
+                    <span>{net:,.2f}</span>
+                </div>
+                <div style="height:8px;"></div>
+                <div class="pay-row" style="font-size:9px; color:#666;">
+                    <span>Days Present: {present_days}</span>
+                    <span>Days Absent: {absent_days}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="summary-box">
+            <b>Total OT Hours:</b> {exact_ot:,.2f}h &nbsp;|&nbsp;
+            <b>Total OT Amount:</b> {total_ot_amount:,.2f} &nbsp;|&nbsp;
+            <b>Total Bonus:</b> {exact_bonus:,.2f} &nbsp;|&nbsp;
+            <b>Total Extra:</b> {total_extra:,.2f} &nbsp;|&nbsp;
+            <b>Net Salary:</b> {net:,.2f}
+        </div>
+
+        <div class="signature-grid">
+            <div class="signature-block">
+                <div class="signature-line">Worker Signature</div>
+            </div>
+            <div class="signature-block">
+                <div class="signature-line">Site Supervisor</div>
+            </div>
+            <div class="signature-block">
+                <div class="signature-line">HR Manager</div>
+            </div>
+        </div>
+
+        <script>window.onload = function() {{ window.print(); }}</script>
+    </body></html>"""
+            return HttpResponse(html)
+
+    # -----------------------------------------------------------------
+    # LABOR COST REPORT — monthly breakdown per project
+    # -----------------------------------------------------------------
+    def labor_cost_report(self, request):
+        from datetime import datetime
+        month_str = request.GET.get("month")
+        if month_str:
+            try:
+                month = datetime.strptime(month_str, "%Y-%m").date().replace(day=1)
+            except ValueError:
+                month = date.today().replace(day=1)
+        else:
+            month = date.today().replace(day=1)
+
+        last_day = calendar.monthrange(month.year, month.month)[1]
+        month_end = month.replace(day=last_day)
+
+        company = CompanyProfile.get_active()
+        logo_url = company.logo.url if company and company.logo else ''
+
+        records = PayrollRecord.objects.filter(
+            month=month
+        ).select_related('employee').prefetch_related('cost_centers', 'cost_centers__project')
+
+        projects = {}
+        for rec in records:
+            emp = rec.employee
+            cc_projects = set()
+
+            for cc in rec.cost_centers.all():
+                proj = cc.project
+                cc_projects.add(proj.id)
+                if proj not in projects:
+                    projects[proj] = []
+
+                cc_start = max(cc.from_date, month)
+                cc_end = min(cc.to_date, month_end)
+                days_in_month = (cc_end - cc_start).days + 1 if cc_start <= cc_end else 0
+
+                ot_amount = money(cc.overtime_hours * emp.hourly_rate_ot) if emp.hourly_rate_ot > 0 else Decimal("0")
+
+                projects[proj].append({
+                    'employee': emp,
+                    'days': days_in_month,
+                    'daily_rate': rec.daily_rate,
+                    'daily_cost': rec.daily_cost,
+                    'salary_cost': cc.prorated_salary,
+                    'admin_cost': cc.prorated_admin_cost,
+                    'ot_hours': cc.overtime_hours,
+                    'ot_amount': ot_amount,
+                    'bonus': cc.bonus,
+                    'total_cost': money(cc.prorated_salary + cc.prorated_admin_cost + ot_amount + cc.bonus),
+                    'record': rec,
+                })
+
+            # Permanent project with no cost center this month
+            if emp.project and emp.project.id not in cc_projects:
+                proj = emp.project
+                if proj not in projects:
+                    projects[proj] = []
+
+                days_in_month = last_day - rec.days_absent
+                if days_in_month > 0:
+                    daily_rate = rec.daily_rate
+                    daily_cost = rec.daily_cost
+                    salary_cost = money(daily_rate * days_in_month)
+                    admin_cost = money((emp.monthly_admin_cost / Decimal("30")) * days_in_month)
+
+                    projects[proj].append({
+                        'employee': emp,
+                        'days': days_in_month,
+                        'daily_rate': daily_rate,
+                        'daily_cost': daily_cost,
+                        'salary_cost': salary_cost,
+                        'admin_cost': admin_cost,
+                        'ot_hours': Decimal("0"),
+                        'ot_amount': Decimal("0"),
+                        'bonus': Decimal("0"),
+                        'total_cost': money(salary_cost + admin_cost),
+                        'record': rec,
+                    })
+
+        sorted_projects = sorted(projects.items(), key=lambda x: x[0].project_id_code)
+
+        # Build HTML sections
+        project_cards = ""
+        grand_total = Decimal("0")
+        grand_salary = Decimal("0")
+        grand_admin = Decimal("0")
+        grand_ot = Decimal("0")
+        grand_bonus = Decimal("0")
+
+        for proj, employees in sorted_projects:
+            if not employees:
+                continue
+
+            rows = ""
+            proj_total = Decimal("0")
+            proj_salary = Decimal("0")
+            proj_admin = Decimal("0")
+            proj_ot = Decimal("0")
+            proj_bonus = Decimal("0")
+
+            for entry in employees:
+                rows += f"""
+                <tr>
+                    <td style="text-align:center;"><b>{entry['employee'].employee_id}</b></td>
+                    <td>{entry['employee'].name}</td>
+                    <td style="text-align:center;">{entry['days']}</td>
+                    <td class='num'>{entry['daily_rate']:,.2f}</td>
+                    <td class='num'>{entry['daily_cost']:,.2f}</td>
+                    <td class='num'>{entry['salary_cost']:,.2f}</td>
+                    <td class='num'>{entry['admin_cost']:,.2f}</td>
+                    <td class='num'>{entry['ot_hours']:,.2f}</td>
+                    <td class='num'>{entry['ot_amount']:,.2f}</td>
+                    <td class='num'>{entry['bonus']:,.2f}</td>
+                    <td class='num' style="font-weight:bold; color:#000080;">{entry['total_cost']:,.2f}</td>
+                </tr>
+                """
+                proj_total += entry['total_cost']
+                proj_salary += entry['salary_cost']
+                proj_admin += entry['admin_cost']
+                proj_ot += entry['ot_amount']
+                proj_bonus += entry['bonus']
+
+            grand_total += proj_total
+            grand_salary += proj_salary
+            grand_admin += proj_admin
+            grand_ot += proj_ot
+            grand_bonus += proj_bonus
+
+            project_cards += f"""
+            <div class="project-card" style="margin-bottom:20px; border:1px solid #ccc; border-radius:8px; overflow:hidden; page-break-inside:avoid;">
+                <div style="background:#000080; color:white; padding:8px 12px; font-size:11px; font-weight:bold;">
+                    {proj.project_id_code} — {proj.project_name}
+                    <span style="float:right; font-weight:normal;">{len(employees)} worker(s)</span>
+                </div>
+                <table class="report-table" style="margin:0;">
+                    <thead>
+                        <tr style="background:#e8e8e8;">
+                            <th style="width:10%;">Emp ID</th>
+                            <th style="width:18%;">Name</th>
+                            <th style="width:7%;">Days</th>
+                            <th class='num' style="width:9%;">Daily Rate</th>
+                            <th class='num' style="width:9%;">Daily Cost</th>
+                            <th class='num' style="width:10%;">Salary</th>
+                            <th class='num' style="width:10%;">Admin</th>
+                            <th class='num' style="width:7%;">OT Hrs</th>
+                            <th class='num' style="width:9%;">OT Amt</th>
+                            <th class='num' style="width:8%;">Bonus</th>
+                            <th class='num' style="width:10%;">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                    <tfoot>
+                        <tr style="background:#e3f2fd; font-weight:bold; border-top:2px solid #333;">
+                            <td colspan="5"><b>PROJECT TOTAL</b></td>
+                            <td class='num'>{proj_salary:,.2f}</td>
+                            <td class='num'>{proj_admin:,.2f}</td>
+                            <td></td>
+                            <td class='num'>{proj_ot:,.2f}</td>
+                            <td class='num'>{proj_bonus:,.2f}</td>
+                            <td class='num' style="color:#000080; font-size:11px;">{proj_total:,.2f}</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            """
+
+        # Month selector form
+        month_options = ""
+        for i in range(0, 12):
+            m = (date.today().replace(day=1) - timedelta(days=i*30)).replace(day=1)
+            selected = "selected" if m == month else ""
+            month_options += f'<option value="{m.strftime("%Y-%m")}" {selected}>{m.strftime("%B %Y")}</option>'
+
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+    @page {{ size: A4 landscape; margin: 10mm; }}
+    * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; color: #222; padding: 10px; }}
+    .logo-bar {{ text-align: right; margin-bottom: 6px; }}
+    .logo-bar img {{ max-height: 50px; max-width: 160px; object-fit: contain; }}
+    .report-title {{ font-size: 20px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
+    .report-subtitle {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 12px; }}
+    .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; line-height: 1.5; font-size: 10px; display:flex; justify-content:space-between; align-items:center; }}
+    .report-table {{ width: 100%; border-collapse: collapse; font-size: 8.5px; }}
+    .report-table th {{ background: #e8e8e8; border: 1px solid #999; padding: 5px 4px; font-weight: bold; text-align: center; }}
+    .report-table td {{ border: 1px solid #ccc; padding: 4px 5px; vertical-align: middle; }}
+    .report-table .num {{ text-align: right; white-space: nowrap; }}
+    .report-table tr:nth-child(even) {{ background: #fafafa; }}
+    .grand-box {{ margin-top: 20px; padding: 15px; background: #000080; color: white; text-align: center; font-size: 16px; border-radius: 8px; }}
+    .grand-grid {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-top: 8px; font-size: 11px; }}
+    .grand-item {{ text-align: center; }}
+    .grand-label {{ font-size: 8px; text-transform: uppercase; opacity: 0.9; margin-bottom: 4px; }}
+    .month-form {{ display: flex; gap: 10px; align-items: center; }}
+    .month-form select {{ padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; font-size: 12px; }}
+    .month-form button {{ padding: 6px 16px; background: #000080; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }}
+    @media print {{ .no-print {{ display: none; }} }}
+</style></head><body>
+    {self._logo_bar(logo_url)}
+    <div class="report-title">MONTHLY PROJECT LABOR COST REPORT</div>
+    <div class="report-subtitle">Worker Cost Breakdown by Project</div>
+
+    <div class="meta-box">
+        <div>
+            <b>Company:</b> {company.company_name if company else 'N/A'} &nbsp;|&nbsp;
+            <b>Month:</b> {month.strftime('%B %Y')} &nbsp;|&nbsp;
+            <b>Projects:</b> {len(sorted_projects)} &nbsp;|&nbsp;
+            <b>Generated:</b> {date.today().strftime('%d-%b-%Y')}
+        </div>
+        <div class="month-form no-print">
+            <form method="get">
+                <select name="month">{month_options}</select>
+                <button type="submit">View Report</button>
+            </form>
+        </div>
+    </div>
+
+    {project_cards if sorted_projects else '<div style="text-align:center; padding:40px; color:#999; font-size:14px;">No payroll records found for this month.</div>'}
+
+    <div class="grand-box">
+        <div style="font-size:13px; margin-bottom:8px; opacity:0.9;">GRAND TOTAL ACROSS ALL PROJECTS</div>
+        <div class="grand-grid">
+            <div class="grand-item">
+                <div class="grand-label">Total Salary Cost</div>
+                <div style="font-weight:bold;">{grand_salary:,.2f}</div>
+            </div>
+            <div class="grand-item">
+                <div class="grand-label">Total Admin Cost</div>
+                <div style="font-weight:bold;">{grand_admin:,.2f}</div>
+            </div>
+            <div class="grand-item">
+                <div class="grand-label">Total OT Amount</div>
+                <div style="font-weight:bold;">{grand_ot:,.2f}</div>
+            </div>
+            <div class="grand-item">
+                <div class="grand-label">Total Bonus</div>
+                <div style="font-weight:bold;">{grand_bonus:,.2f}</div>
+            </div>
+            <div class="grand-item">
+                <div class="grand-label">Grand Total Cost</div>
+                <div style="font-weight:bold; font-size:14px;">{grand_total:,.2f}</div>
+            </div>
+        </div>
+    </div>
+
+    <script>window.onload = function() {{ setTimeout(function() {{ window.print(); }}, 500); }}</script>
+</body></html>"""
+        return HttpResponse(html)
+
+    # -----------------------------------------------------------------
+    # PAYROLL REPORTS (Staff / WPS / Cash)
+    # -----------------------------------------------------------------
+    def _logo_bar(self, logo_url):
+        if logo_url:
+            return f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>'
+        return ''
+
+    def _payroll_report_wrapper(self, title, headers, rows, totals, payment_method):
+        company = CompanyProfile.get_active()
+        logo_url = company.logo.url if company and company.logo else ''
+        logo_bar_html = f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>' if logo_url else ''
+
+        header_cells = "".join(f"<th>{h}</th>" for h in headers)
+        total_row = ""
+        if "basic" in totals:
+            total_row = f"""<<tr class='total-row'>
+                <td colspan='2'><b>TOTAL</b></td>
+                <td class='num'>{totals['basic']:,.2f}</td>
+                <td class='num'>{totals['housing']:,.2f}</td>
+                <td class='num'>{totals['transport']:,.2f}</td>
+                <td class='num'>{totals['other']:,.2f}</td>
+                <td class='num'><b>{totals['total']:,.2f}</b></td>
+                <td class='num'>({totals['absence']:,.2f})</td>
+                <td class='num'>({totals['advance']:,.2f})</td>
+                <td class='num'>({totals['other_ded']:,.2f})</td>
+                <td class='num'><b>{totals['net']:,.2f}</b></td>
+            </tr>"""
+        elif "ot" in totals:
+            total_row = f"""<<tr class='total-row'>
+                <td colspan='2'><b>TOTAL</b></td>
+                <td class='num'>{totals['total']:,.2f}</td>
+                <td></td>
+                <td class='num'>{totals['ot']:,.2f}</td>
+                <td class='num'>({totals['absence']:,.2f})</td>
+                <td class='num'>({totals['advance']:,.2f})</td>
+                <td class='num'>({totals['other_ded']:,.2f})</td>
+                <td class='num'><b>{totals['net']:,.2f}</b></td>
+            </tr>"""
+        else:
+            total_row = f"""<<tr class='total-row'>
+                <td colspan='3'><b>TOTAL</b></td>
+                <td class='num'><b>{totals['net']:,.2f}</b></td>
+                <td></td>
+            </tr>"""
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+    @page {{ size: A4 portrait; margin: 10mm; }}
+    * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; padding: 10px; }}
+    .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
+    .report-sub {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
+    .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 20px; line-height: 1.6; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 9px; margin-top: 6px; }}
+    th {{ background: #e8e8e8; border: 1px solid #999; padding: 6px; text-align: left; font-weight: bold; }}
+    td {{ border: 1px solid #ccc; padding: 5px; }}
+    .num {{ text-align: right; white-space: nowrap; }}
+    tr:nth-child(even) {{ background: #fafafa; }}
+    .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; }}
+</style></head><body>
+    {logo_bar_html}
+    <div class="report-title">{title}</div>
+    <div class="report-sub">Payment Method: {payment_method} | Generated: {date.today().strftime('%d-%b-%Y')}</div>
+    <div class="meta-box">
+        <b>Report Type:</b> {title}<br>
+        <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
+    </div>
+    <table>
+        <thead><tr>{header_cells}</tr></thead>
+        <tbody>{rows}</tbody>
+        <tfoot>{total_row}</tfoot>
+    </table>
+    <script>window.onload = function() {{ window.print(); }}</script>
+</body></html>"""
+
+    def staff_report(self, request):
+        month = request.GET.get("month")
+        qs = PayrollRecord.objects.filter(
+            employee__employee_type="Staff",
+            employee__payment_type="Bank"
+        ).select_related("employee").order_by("-month")
+        if month:
+            qs = qs.filter(month=month)
+
+        rows = ""
+        totals = {"basic": Decimal("0"), "housing": Decimal("0"), "transport": Decimal("0"),
+                  "other": Decimal("0"), "total": Decimal("0"), "absence": Decimal("0"),
+                  "advance": Decimal("0"), "other_ded": Decimal("0"), "net": Decimal("0")}
+
+        for rec in qs:
+            rows += f"""<<tr>
+                <td>{rec.employee.employee_id}</td>
+                <td>{rec.employee.name}</td>
+                <td class='num'>{rec.basic_salary_snap:,.2f}</td>
+                <td class='num'>{rec.housing_allowance_snap:,.2f}</td>
+                <td class='num'>{rec.transport_allowance_snap:,.2f}</td>
+                <td class='num'>{rec.other_allowances_snap:,.2f}</td>
+                <td class='num'><b>{rec.total_salary_snap:,.2f}</b></td>
+                <td class='num'>({rec.absence_deduction_snap:,.2f})</td>
+                <td class='num'>({rec.salary_advance:,.2f})</td>
+                <td class='num'>({rec.other_deduction:,.2f})</td>
+                <td class='num'><b>{rec.net_salary_snap:,.2f}</b></td>
+            </tr>"""
+            totals["basic"] += rec.basic_salary_snap
+            totals["housing"] += rec.housing_allowance_snap
+            totals["transport"] += rec.transport_allowance_snap
+            totals["other"] += rec.other_allowances_snap
+            totals["total"] += rec.total_salary_snap
+            totals["absence"] += rec.absence_deduction_snap
+            totals["advance"] += rec.salary_advance
+            totals["other_ded"] += rec.other_deduction
+            totals["net"] += rec.net_salary_snap
+
+        html = self._payroll_report_wrapper(
+            "OFFICE STAFF PAYROLL REPORT",
+            ["Emp ID", "Name", "Basic", "Housing", "Transport", "Other", "Total", "Absence", "Advance", "Other Ded.",
+             "Net"],
+            rows, totals, "Bank Transfer"
+        )
+        return HttpResponse(html)
+
+    def wps_report(self, request):
+        month = request.GET.get("month")
+        qs = PayrollRecord.objects.filter(
+            employee__employee_type="Site",
+            employee__payment_type="WPS"
+        ).select_related("employee").order_by("-month")
+        if month:
+            qs = qs.filter(month=month)
+
+        rows = ""
+        totals = {"total": Decimal("0"), "ot": Decimal("0"), "absence": Decimal("0"),
+                  "advance": Decimal("0"), "other_ded": Decimal("0"), "net": Decimal("0")}
+
+        for rec in qs:
+            rows += f"""<<tr>
+                <td>{rec.employee.employee_id}</td>
+                <td>{rec.employee.name}</td>
+                <td class='num'>{rec.total_salary_snap:,.2f}</td>
+                <td class='num'>{rec.overtime_hours}h</td>
+                <td class='num'>{rec.overtime_amount_snap:,.2f}</td>
+                <td class='num'>({rec.absence_deduction_snap:,.2f})</td>
+                <td class='num'>({rec.salary_advance:,.2f})</td>
+                <td class='num'>({rec.other_deduction:,.2f})</td>
+                <td class='num'><b>{rec.net_salary_snap:,.2f}</b></td>
+            </tr>"""
+            totals["total"] += rec.total_salary_snap
+            totals["ot"] += rec.overtime_amount_snap
+            totals["absence"] += rec.absence_deduction_snap
+            totals["advance"] += rec.salary_advance
+            totals["other_ded"] += rec.other_deduction
+            totals["net"] += rec.net_salary_snap
+
+        html = self._payroll_report_wrapper(
+            "SITE WORKERS PAYROLL REPORT (WPS)",
+            ["Emp ID", "Name", "Total Salary", "OT Hrs", "OT Amt", "Absence", "Advance", "Other Ded.", "Net"],
+            rows, totals, "WPS Agency"
+        )
+        return HttpResponse(html)
+
+    def cash_report(self, request):
+        month = request.GET.get("month")
+        qs = PayrollRecord.objects.filter(
+            employee__payment_type="Cash"
+        ).select_related("employee").order_by("-month")
+        if month:
+            qs = qs.filter(month=month)
+
+        rows = ""
+        total_net = Decimal("0")
+        for rec in qs:
+            total_net += rec.net_salary_snap
+            rows += f"""<<tr>
+                <td>{rec.employee.employee_id}</td>
+                <td>{rec.employee.name}</td>
+                <td>{rec.employee.get_employee_type_display()}</td>
+                <td class='num'>{rec.net_salary_snap:,.2f}</td>
+                <td style='width:120px; border-bottom:1px solid #333;'></td>
+            </tr>"""
+
+        html = self._payroll_report_wrapper(
+            "CASH PAYROLL REPORT",
+            ["Emp ID", "Name", "Type", "Net Amount", "Signature"],
+            rows, {"net": total_net}, "Cash"
+        )
+        return HttpResponse(html)
 
     def allocate_view(self, request):
         today = date.today()
@@ -2010,7 +2596,7 @@ class PayrollRecordAdmin(admin.ModelAdmin):
         total_net = Decimal("0")
         for rec in unallocated:
             total_net += rec.net_salary_snap
-            rows += f"""<tr>
+            rows += f"""<<tr>
                 <td>{rec.employee.employee_id}</td>
                 <td>{rec.employee.name}</td>
                 <td>{rec.employee.get_employee_type_display()}</td>
@@ -2063,187 +2649,6 @@ class PayrollRecordAdmin(admin.ModelAdmin):
     </div>
 </body></html>"""
         return HttpResponse(html)
-
-    def staff_report(self, request):
-        month = request.GET.get("month")
-        qs = PayrollRecord.objects.filter(
-            employee__employee_type="Staff",
-            employee__payment_type="Bank"
-        ).select_related("employee").order_by("-month")
-        if month:
-            qs = qs.filter(month=month)
-
-        rows = ""
-        totals = {"basic": Decimal("0"), "housing": Decimal("0"), "transport": Decimal("0"),
-                  "other": Decimal("0"), "total": Decimal("0"), "absence": Decimal("0"),
-                  "advance": Decimal("0"), "other_ded": Decimal("0"), "net": Decimal("0")}
-
-        for rec in qs:
-            rows += f"""<tr>
-                <td>{rec.employee.employee_id}</td>
-                <td>{rec.employee.name}</td>
-                <td class='num'>{rec.basic_salary_snap:,.2f}</td>
-                <td class='num'>{rec.housing_allowance_snap:,.2f}</td>
-                <td class='num'>{rec.transport_allowance_snap:,.2f}</td>
-                <td class='num'>{rec.other_allowances_snap:,.2f}</td>
-                <td class='num'><b>{rec.total_salary_snap:,.2f}</b></td>
-                <td class='num'>({rec.absence_deduction_snap:,.2f})</td>
-                <td class='num'>({rec.salary_advance:,.2f})</td>
-                <td class='num'>({rec.other_deduction:,.2f})</td>
-                <td class='num'><b>{rec.net_salary_snap:,.2f}</b></td>
-            </tr>"""
-            totals["basic"] += rec.basic_salary_snap
-            totals["housing"] += rec.housing_allowance_snap
-            totals["transport"] += rec.transport_allowance_snap
-            totals["other"] += rec.other_allowances_snap
-            totals["total"] += rec.total_salary_snap
-            totals["absence"] += rec.absence_deduction_snap
-            totals["advance"] += rec.salary_advance
-            totals["other_ded"] += rec.other_deduction
-            totals["net"] += rec.net_salary_snap
-
-        html = self._payroll_report_wrapper(
-            "OFFICE STAFF PAYROLL REPORT",
-            ["Emp ID", "Name", "Basic", "Housing", "Transport", "Other", "Total", "Absence", "Advance", "Other Ded.",
-             "Net"],
-            rows, totals, "Bank Transfer"
-        )
-        return HttpResponse(html)
-
-    def wps_report(self, request):
-        month = request.GET.get("month")
-        qs = PayrollRecord.objects.filter(
-            employee__employee_type="Site",
-            employee__payment_type="WPS"
-        ).select_related("employee").order_by("-month")
-        if month:
-            qs = qs.filter(month=month)
-
-        rows = ""
-        totals = {"total": Decimal("0"), "ot": Decimal("0"), "absence": Decimal("0"),
-                  "advance": Decimal("0"), "other_ded": Decimal("0"), "net": Decimal("0")}
-
-        for rec in qs:
-            rows += f"""<tr>
-                <td>{rec.employee.employee_id}</td>
-                <td>{rec.employee.name}</td>
-                <td class='num'>{rec.total_salary_snap:,.2f}</td>
-                <td class='num'>{rec.overtime_hours}h</td>
-                <td class='num'>{rec.overtime_amount_snap:,.2f}</td>
-                <td class='num'>({rec.absence_deduction_snap:,.2f})</td>
-                <td class='num'>({rec.salary_advance:,.2f})</td>
-                <td class='num'>({rec.other_deduction:,.2f})</td>
-                <td class='num'><b>{rec.net_salary_snap:,.2f}</b></td>
-            </tr>"""
-            totals["total"] += rec.total_salary_snap
-            totals["ot"] += rec.overtime_amount_snap
-            totals["absence"] += rec.absence_deduction_snap
-            totals["advance"] += rec.salary_advance
-            totals["other_ded"] += rec.other_deduction
-            totals["net"] += rec.net_salary_snap
-
-        html = self._payroll_report_wrapper(
-            "SITE WORKERS PAYROLL REPORT (WPS)",
-            ["Emp ID", "Name", "Total Salary", "OT Hrs", "OT Amt", "Absence", "Advance", "Other Ded.", "Net"],
-            rows, totals, "WPS Agency"
-        )
-        return HttpResponse(html)
-
-    def cash_report(self, request):
-        month = request.GET.get("month")
-        qs = PayrollRecord.objects.filter(
-            employee__payment_type="Cash"
-        ).select_related("employee").order_by("-month")
-        if month:
-            qs = qs.filter(month=month)
-
-        rows = ""
-        total_net = Decimal("0")
-        for rec in qs:
-            total_net += rec.net_salary_snap
-            rows += f"""<tr>
-                <td>{rec.employee.employee_id}</td>
-                <td>{rec.employee.name}</td>
-                <td>{rec.employee.get_employee_type_display()}</td>
-                <td class='num'>{rec.net_salary_snap:,.2f}</td>
-                <td style='width:120px; border-bottom:1px solid #333;'></td>
-            </tr>"""
-
-        html = self._payroll_report_wrapper(
-            "CASH PAYROLL REPORT",
-            ["Emp ID", "Name", "Type", "Net Amount", "Signature"],
-            rows, {"net": total_net}, "Cash"
-        )
-        return HttpResponse(html)
-
-    def _payroll_report_wrapper(self, title, headers, rows, totals, payment_method):
-        company = CompanyProfile.get_active()
-        logo_url = company.logo.url if company and company.logo else ''
-        logo_bar_html = f'<div style="text-align:right; margin-bottom:6px;"><img src="{logo_url}" alt="Logo" style="max-height:60px; max-width:180px; object-fit:contain;"></div>' if logo_url else ''
-
-        header_cells = "".join(f"<th>{h}</th>" for h in headers)
-        total_row = ""
-        if "basic" in totals:
-            total_row = f"""<tr class='total-row'>
-                <td colspan='2'><b>TOTAL</b></td>
-                <td class='num'>{totals['basic']:,.2f}</td>
-                <td class='num'>{totals['housing']:,.2f}</td>
-                <td class='num'>{totals['transport']:,.2f}</td>
-                <td class='num'>{totals['other']:,.2f}</td>
-                <td class='num'><b>{totals['total']:,.2f}</b></td>
-                <td class='num'>({totals['absence']:,.2f})</td>
-                <td class='num'>({totals['advance']:,.2f})</td>
-                <td class='num'>({totals['other_ded']:,.2f})</td>
-                <td class='num'><b>{totals['net']:,.2f}</b></td>
-            </tr>"""
-        elif "ot" in totals:
-            total_row = f"""<tr class='total-row'>
-                <td colspan='2'><b>TOTAL</b></td>
-                <td class='num'>{totals['total']:,.2f}</td>
-                <td></td>
-                <td class='num'>{totals['ot']:,.2f}</td>
-                <td class='num'>({totals['absence']:,.2f})</td>
-                <td class='num'>({totals['advance']:,.2f})</td>
-                <td class='num'>({totals['other_ded']:,.2f})</td>
-                <td class='num'><b>{totals['net']:,.2f}</b></td>
-            </tr>"""
-        else:
-            total_row = f"""<tr class='total-row'>
-                <td colspan='3'><b>TOTAL</b></td>
-                <td class='num'><b>{totals['net']:,.2f}</b></td>
-                <td></td>
-            </tr>"""
-
-        return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<style>
-    @page {{ size: A4 portrait; margin: 10mm; }}
-    * {{ box-sizing: border-box; margin:0; padding:0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-    body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; padding: 10px; }}
-    .report-title {{ font-size: 18px; font-weight: bold; text-align: center; color: #000080; margin-bottom: 4px; }}
-    .report-sub {{ font-size: 12px; text-align: center; color: #666; margin-bottom: 15px; }}
-    .meta-box {{ background: #f5f5f5; padding: 10px 15px; border-radius: 6px; margin-bottom: 20px; line-height: 1.6; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 9px; margin-top: 6px; }}
-    th {{ background: #e8e8e8; border: 1px solid #999; padding: 6px; text-align: left; font-weight: bold; }}
-    td {{ border: 1px solid #ccc; padding: 5px; }}
-    .num {{ text-align: right; white-space: nowrap; }}
-    tr:nth-child(even) {{ background: #fafafa; }}
-    .total-row td {{ background: #e3f2fd; font-weight: bold; border-top: 2px solid #333; }}
-</style></head><body>
-    {logo_bar_html}
-    <div class="report-title">{title}</div>
-    <div class="report-sub">Payment Method: {payment_method} | Generated: {date.today().strftime('%d-%b-%Y')}</div>
-    <div class="meta-box">
-        <b>Report Type:</b> {title}<br>
-        <b>Date:</b> {date.today().strftime('%d-%b-%Y')}
-    </div>
-    <table>
-        <thead><tr>{header_cells}</tr></thead>
-        <tbody>{rows}</tbody>
-        <tfoot>{total_row}</tfoot>
-    </table>
-    <script>window.onload = function() {{ window.print(); }}</script>
-</body></html>"""
 
 
 # =============================================================================

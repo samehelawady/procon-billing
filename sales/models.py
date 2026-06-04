@@ -581,21 +581,20 @@ class Employee(models.Model):
     def daily_rate(self):
         return money(self.total_salary / Decimal("30"))
 
-    @property
+
+    @property  # <-- THIS LINE MUST EXIST AND BE DIRECTLY ABOVE THE METHOD
     def eos_amount(self):
         """
         End of Service (EOS) benefits.
         - Less than 1 year of service: 0
         - Years 1 to 3: 21 days of basic salary per completed year
         - Year 4 onwards: 30 days of basic salary per completed year
-        - Current partial year is prorated by days attended (excluding absence).
+        - Current partial year is prorated by days attended.
         """
         if not self.date_joined or not self.is_active:
             return Decimal("0.00")
 
         today = date.today()
-
-        # Completed full years of service
         completed_years = today.year - self.date_joined.year
         if (today.month, today.day) < (self.date_joined.month, self.date_joined.day):
             completed_years -= 1
@@ -606,14 +605,12 @@ class Employee(models.Model):
         daily_basic = self.basic_salary / Decimal("30")
         total_eos = Decimal("0")
 
-        # Full completed years
         for year in range(1, completed_years + 1):
             if year <= 3:
                 total_eos += daily_basic * Decimal("21")
             else:
                 total_eos += daily_basic * Decimal("30")
 
-        # Current partial year (since last anniversary)
         try:
             last_anniversary = date(today.year, self.date_joined.month, self.date_joined.day)
         except ValueError:
@@ -634,11 +631,9 @@ class Employee(models.Model):
             else:
                 entitlement = daily_basic * Decimal("30")
 
-            # Sum absences recorded in payroll records during the current service year
-            year_absence = self.payroll_records.filter(
-                month__gte=last_anniversary,
-                month__lte=today
-            ).aggregate(total=Sum('days_absent'))['total'] or Decimal("0")
+            year_absence = Decimal("0")
+            for pr in self.payroll_records.filter(month__gte=last_anniversary, month__lte=today):
+                year_absence += Decimal(str(pr.days_absent))
 
             attended_days = max(0, days_in_current_year - int(year_absence))
             total_eos += entitlement * Decimal(attended_days) / Decimal(days_in_current_year)
@@ -703,7 +698,6 @@ class PayrollRecord(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="payroll_records")
     month = models.DateField(help_text="First day of the month")
 
-    days_absent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     salary_advance = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     other_deduction = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     overtime_hours = models.DecimalField(max_digits=8, decimal_places=2, default=0)
@@ -729,6 +723,46 @@ class PayrollRecord(models.Model):
     def __str__(self):
         return f"{self.employee.name} — {self.month.strftime('%b %Y')}"
 
+    # ---------------------------------------------------------------------
+    # ABSENCE — computed from timesheet gaps (no DB field)
+    # ---------------------------------------------------------------------
+    @property
+    def days_absent(self):
+        """Calculate absence from gaps in cost-center / project coverage."""
+        if not self.month:
+            return 0
+        month_start = self.month
+        last_day = calendar.monthrange(month_start.year, month_start.month)[1]
+        month_end = month_start.replace(day=last_day)
+
+        covered_days = set()
+        for cc in self.cost_centers.all():
+            current = max(cc.from_date, month_start)
+            end = min(cc.to_date, month_end)
+            while current <= end:
+                covered_days.add(current)
+                current += timedelta(days=1)
+
+        absent = 0
+        current = month_start
+        while current <= month_end:
+            if current not in covered_days:
+                if not self.employee.project:
+                    absent += 1
+            current += timedelta(days=1)
+        return absent
+
+    @property
+    def days_present(self):
+        if not self.month:
+            return 0
+        last_day = calendar.monthrange(self.month.year, self.month.month)[1]
+        month_end = self.month.replace(day=last_day)
+        return (month_end - self.month).days + 1 - self.days_absent
+
+    # ---------------------------------------------------------------------
+    # PAYROLL CALCULATIONS
+    # ---------------------------------------------------------------------
     @property
     def overtime_amount(self):
         if self.employee.employee_type == 'Site' and self.overtime_hours > 0:
@@ -744,7 +778,6 @@ class PayrollRecord(models.Model):
 
     @property
     def net_salary(self):
-        # Include cost center OT and bonus
         cc_ot = Decimal("0")
         cc_bonus = Decimal("0")
         try:
@@ -756,24 +789,26 @@ class PayrollRecord(models.Model):
             cc_bonus = cc_data['total_bonus'] or Decimal("0")
         except Exception:
             pass
+
         cc_ot_amount = money(cc_ot * self.employee.hourly_rate_ot) if self.employee.hourly_rate_ot > 0 else Decimal("0")
         gross = self.employee.total_salary + self.overtime_amount + cc_ot_amount + cc_bonus
         deductions = self.absence_deduction + self.salary_advance + self.other_deduction
         return money(gross - deductions)
 
     # ---------------------------------------------------------------------
-    # NEW: Snap-based daily rates (30-day month) used for project costing
+    # DAILY RATES (30-day month) — used for project costing
     # ---------------------------------------------------------------------
     @property
     def daily_rate(self):
-        """Daily rate based on 30-day month (total salary + overtime)."""
         return money((self.total_salary_snap + self.overtime_amount_snap) / Decimal("30"))
 
     @property
     def daily_cost(self):
-        """Daily cost based on 30-day month (salary + overtime + admin)."""
         return money((self.total_salary_snap + self.overtime_amount_snap + self.employee.monthly_admin_cost) / Decimal("30"))
 
+    # ---------------------------------------------------------------------
+    # SAVE — snapshots + recalculate after cost centers exist
+    # ---------------------------------------------------------------------
     def save(self, *args, **kwargs):
         self.basic_salary_snap = self.employee.basic_salary
         self.housing_allowance_snap = self.employee.housing_allowance
@@ -781,7 +816,7 @@ class PayrollRecord(models.Model):
         self.other_allowances_snap = self.employee.other_allowances
         self.total_salary_snap = self.employee.total_salary
         self.overtime_amount_snap = self.overtime_amount
-        # Include cost center OT in overtime snap
+
         cc_ot = Decimal("0")
         try:
             cc_ot = self.cost_centers.aggregate(total=Sum('overtime_hours'))['total'] or Decimal("0")
@@ -789,6 +824,7 @@ class PayrollRecord(models.Model):
             pass
         if cc_ot > 0 and self.employee.hourly_rate_ot > 0:
             self.overtime_amount_snap = money(self.overtime_amount + (cc_ot * self.employee.hourly_rate_ot))
+
         self.absence_deduction_snap = self.absence_deduction
         self.net_salary_snap = self.net_salary
         super().save(*args, **kwargs)
